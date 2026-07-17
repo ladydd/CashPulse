@@ -1,0 +1,28 @@
+# Binaries
+/bin/
+/cashpulse
+/server
+*.exe
+
+# Data
+/data/
+/tmp/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Env
+.env
+.env.local
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.log

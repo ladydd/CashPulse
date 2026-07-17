@@ -1,0 +1,5 @@
+# Example reverse proxy with automatic HTTPS (replace domain).
+cashpulse.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}

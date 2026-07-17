@@ -1,0 +1,31 @@
+[Unit]
+Description=CashPulse expense tracker
+After=network.target
+
+[Service]
+Type=simple
+User=cashpulse
+Group=cashpulse
+WorkingDirectory=/opt/cashpulse
+ExecStart=/opt/cashpulse/cashpulse
+Restart=on-failure
+RestartSec=3
+
+# Secrets: put real values in /etc/cashpulse.env (chmod 600)
+EnvironmentFile=-/etc/cashpulse.env
+
+# Fallbacks (override in EnvironmentFile)
+Environment=PORT=8080
+Environment=DATABASE_PATH=/var/lib/cashpulse/cashpulse.db
+Environment=TZ_NAME=Asia/Shanghai
+Environment=SECURE_COOKIE=true
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cashpulse
+
+[Install]
+WantedBy=multi-user.target
