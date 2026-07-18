@@ -61,10 +61,17 @@ func (h *Handler) IngestSMS(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.svc.IngestSMS(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, resp)
+	code := http.StatusCreated
+	if resp.Duplicate {
+		code = http.StatusOK
+	}
+	if resp.Status == model.ParseStatusPending {
+		code = http.StatusAccepted // 202
+	}
+	writeJSON(w, code, resp)
 }
 
 func decodeIngestBody(r *http.Request) (service.IngestSMSRequest, error) {

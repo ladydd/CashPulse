@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
-import { api, clearToken, getToken, setToken } from './api/client'
+import { api, clearToken, getToken } from './api/client'
 import { currentMonth, greeting, money, monthLabel, shiftMonth, ymd, fmtTime } from './lib/format'
 
 function clampMonth(ym) {
@@ -316,8 +316,7 @@ function Transactions({ data, onSearch, onRefresh, onLoadMore, total = 0, loadin
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索商户、分类…" onKeyDown={(e) => e.key === 'Enter' && onSearch(q)} />
         <button type="button" className="btn primary" onClick={() => onSearch(q)}>搜索</button>
       </section>
-      <div className="result-meta">{data.search ? `「${data.search}」· ` : ''}{data.transactions?.length || 0} 笔</div>
-      <div className="result-meta">已显示 {data.transactions?.length || 0}{total ? ` / 共 ${total}` : ''} 笔</div>
+      <div className="result-meta">{data.search ? `「${data.search}」 · ` : ''}已显示 {data.transactions?.length || 0}{total ? ` / 共 ${total}` : ''} 笔</div>
       <section className="card">
         {groups.length ? groups.map(([date, items]) => (
           <div className="txn-group" key={date}>
@@ -622,7 +621,6 @@ function Settings({ data, onRefresh, setError, setNotice, budgetMonth }) {
   const [ruleTag, setRuleTag] = useState('')
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
-  const [tokenInput, setTokenInput] = useState(getToken())
   const [sms, setSms] = useState('')
   const [testOut, setTestOut] = useState('')
 
@@ -688,7 +686,7 @@ function Settings({ data, onRefresh, setError, setNotice, budgetMonth }) {
           {(data.goals || []).map((g) => (
             <div key={g.id}>
               <span><strong>{g.name}</strong><small>{money(g.current)} / {money(g.target)} · {Math.round(g.pct || 0)}%</small></span>
-              <button type="button" onClick={async () => { await api.deleteGoal(g.id); onRefresh() }}>删除</button>
+              <button type="button" onClick={async () => { try { await api.deleteGoal(g.id); onRefresh() } catch (e) { setError(e.message) } }}>删除</button>
             </div>
           ))}
         </div>
@@ -715,7 +713,7 @@ function Settings({ data, onRefresh, setError, setNotice, budgetMonth }) {
           </div>
           <div className="chip-manage">
             {(data.tags || []).map((t) => (
-              <span key={t.id} style={{ '--chip': t.color }}>{t.name}<button type="button" onClick={async () => { await api.deleteTag(t.id); onRefresh() }}>×</button></span>
+              <span key={t.id} style={{ '--chip': t.color }}>{t.name}<button type="button" onClick={async () => { try { await api.deleteTag(t.id); onRefresh() } catch (e) { setError(e.message) } }}>×</button></span>
             ))}
           </div>
         </div>
@@ -767,7 +765,7 @@ function Settings({ data, onRefresh, setError, setNotice, budgetMonth }) {
           {(data.rules || []).map((r) => (
             <div key={r.id}>
               <span><strong>{r.match_field} {r.match_op} 「{r.match_value}」</strong><small>→ {r.person_name || r.tag_name || '—'}</small></span>
-              <button type="button" onClick={async () => { await api.deleteRule(r.id); onRefresh() }}>删除</button>
+              <button type="button" onClick={async () => { try { await api.deleteRule(r.id); onRefresh() } catch (e) { setError(e.message) } }}>删除</button>
             </div>
           ))}
         </div>
@@ -782,17 +780,20 @@ function Settings({ data, onRefresh, setError, setNotice, budgetMonth }) {
             type="button"
             className="btn primary"
             onClick={async () => {
-              const url = api.exportUrl(exportFrom, exportTo)
-              const headers = {}
-              const tok = getToken()
-              if (tok) headers.Authorization = `Bearer ${tok}`
-              const res = await fetch(url, { credentials: 'include', headers })
-              if (!res.ok) throw new Error('export failed')
-              const blob = await res.blob()
-              const a = document.createElement('a')
-              a.href = URL.createObjectURL(blob)
-              a.download = 'cashpulse.csv'
-              a.click()
+              try {
+                const url = api.exportUrl(exportFrom, exportTo)
+                const headers = {}
+                const tok = getToken()
+                if (tok) headers.Authorization = `Bearer ${tok}`
+                const res = await fetch(url, { credentials: 'include', headers })
+                if (!res.ok) throw new Error('export failed')
+                const blob = await res.blob()
+                const a = document.createElement('a')
+                a.href = URL.createObjectURL(blob)
+                a.download = 'cashpulse.csv'
+                a.click()
+                setNotice('导出已开始')
+              } catch (e) { setError(e.message || '导出失败') }
             }}
           >
             下载 CSV

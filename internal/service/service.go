@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"cashpulse/internal/model"
@@ -49,9 +50,10 @@ type IngestSMSResponse struct {
 	IgnoreReason string             `json:"ignore_reason,omitempty"`
 }
 
-// IngestSMS stores the raw SMS and attempts to parse it into a transaction.
+// IngestSMS parses then atomically persists. Never leaves orphan pending for new SMS.
+// Exact duplicate body returns previous final result with Duplicate=true.
 func (s *Service) IngestSMS(ctx context.Context, req IngestSMSRequest) (*IngestSMSResponse, error) {
-	text := req.Text
+	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		return nil, fmt.Errorf("text is required")
 	}
@@ -60,94 +62,78 @@ func (s *Service) IngestSMS(ctx context.Context, req IngestSMSRequest) (*IngestS
 		source = "shortcut"
 	}
 
-	ins, err := s.store.InsertRawSMS(ctx, text, source)
-	if err != nil {
-		return nil, fmt.Errorf("save raw sms: %w", err)
-	}
-	id := ins.ID
-	resp := &IngestSMSResponse{RawSMSID: id}
-
-	// Exact same SMS body already processed → return existing result (idempotent).
-	if ins.Duplicate {
-		resp.Duplicate = true
-		resp.Status = ins.Status
-		if ins.Status == model.ParseStatusFailed {
-			resp.ParseError = ins.Error
-		}
-		if ins.Status == model.ParseStatusIgnored {
-			resp.Ignored = true
-			resp.IgnoreReason = ins.Error
-		}
-		if txn, err := s.store.TransactionByRawSMSID(ctx, id); err == nil && txn != nil {
-			resp.Transaction = txn
-			if resp.Status == "" || resp.Status == model.ParseStatusPending {
-				resp.Status = model.ParseStatusOK
-			}
-		}
-		if resp.Status == "" || resp.Status == model.ParseStatusPending {
-			// orphan pending row: re-parse path below would double-work; treat as ok empty
-			resp.Status = ins.Status
-			if resp.Status == model.ParseStatusPending {
-				resp.Status = model.ParseStatusOK
-			}
-		}
-		return resp, nil
-	}
-
+	parse := store.IngestParse{Status: model.ParseStatusFailed}
 	result, parseErr := s.parser.Parse(text, time.Now())
 	if parseErr != nil {
-		_ = s.store.MarkRawSMS(ctx, id, model.ParseStatusFailed, parseErr.Error())
-		resp.Status = model.ParseStatusFailed
-		resp.ParseError = parseErr.Error()
-		return resp, nil
+		parse.Status = model.ParseStatusFailed
+		parse.ParseError = parseErr.Error()
+	} else {
+		parse.MatchedRule = result.MatchedRule
+		if result.Ignored {
+			parse.Status = model.ParseStatusIgnored
+			parse.IgnoreReason = result.IgnoreReason
+		} else if result.Transaction == nil {
+			parse.Status = model.ParseStatusFailed
+			parse.ParseError = "empty transaction"
+		} else {
+			parse.Status = model.ParseStatusOK
+			parse.Transaction = result.Transaction
+		}
 	}
 
-	resp.MatchedRule = result.MatchedRule
-
-	if result.Ignored {
-		_ = s.store.MarkRawSMS(ctx, id, model.ParseStatusIgnored, result.IgnoreReason)
-		resp.Status = model.ParseStatusIgnored
-		resp.Ignored = true
-		resp.IgnoreReason = result.IgnoreReason
-		return resp, nil
-	}
-
-	txn := result.Transaction
-	if txn == nil {
-		_ = s.store.MarkRawSMS(ctx, id, model.ParseStatusFailed, "empty transaction")
-		resp.Status = model.ParseStatusFailed
-		resp.ParseError = "empty transaction"
-		return resp, nil
-	}
-
-	txn.RawSMSID = id
-	if txn.OccurredAt.IsZero() {
-		txn.OccurredAt = time.Now()
-	}
-	txnID, err := s.store.InsertTransaction(ctx, txn)
+	ins, txn, err := s.store.PersistIngestResult(ctx, text, source, parse)
 	if err != nil {
-		_ = s.store.MarkRawSMS(ctx, id, model.ParseStatusFailed, err.Error())
-		return nil, fmt.Errorf("save transaction: %w", err)
-	}
-	txn.ID = txnID
-	txn.CreatedAt = time.Now().UTC()
-
-	if err := s.store.MarkRawSMS(ctx, id, model.ParseStatusOK, ""); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("persist ingest: %w", err)
 	}
 
-	// auto-label rules (best-effort)
-	_ = s.store.ApplyRulesToTxn(ctx, txnID)
-	if updated, err := s.store.GetTransaction(ctx, txnID); err == nil {
-		txn = &updated
+	resp := &IngestSMSResponse{
+		RawSMSID:    ins.ID,
+		Status:      ins.Status,
+		Duplicate:   ins.Duplicate,
+		MatchedRule: parse.MatchedRule,
+		Transaction: txn,
 	}
-
-	resp.Status = model.ParseStatusOK
-	resp.Transaction = txn
+	if ins.Status == model.ParseStatusFailed {
+		resp.ParseError = ins.Error
+		if resp.ParseError == "" {
+			resp.ParseError = parse.ParseError
+		}
+	}
+	if ins.Status == model.ParseStatusIgnored {
+		resp.Ignored = true
+		resp.IgnoreReason = ins.Error
+		if resp.IgnoreReason == "" {
+			resp.IgnoreReason = parse.IgnoreReason
+		}
+	}
+	// Legacy pending: recover or return pending honestly (never fake ok without txn).
+	if ins.Duplicate && ins.Status == model.ParseStatusPending {
+		resp.Status = model.ParseStatusPending
+		if parse.Status == model.ParseStatusOK && parse.Transaction != nil && txn == nil {
+			ptxn := *parse.Transaction
+			ptxn.RawSMSID = ins.ID
+			if ptxn.OccurredAt.IsZero() {
+				ptxn.OccurredAt = time.Now()
+			}
+			if tid, ierr := s.store.InsertTransaction(ctx, &ptxn); ierr == nil {
+				_ = s.store.MarkRawSMS(ctx, ins.ID, model.ParseStatusOK, "")
+				_ = s.store.ApplyRulesToTxn(ctx, tid)
+				if updated, gerr := s.store.GetTransaction(ctx, tid); gerr == nil {
+					resp.Transaction = &updated
+					resp.Status = model.ParseStatusOK
+				}
+			}
+		}
+		return resp, nil
+	}
+	if resp.Status == model.ParseStatusOK && resp.Transaction == nil {
+		resp.Status = model.ParseStatusFailed
+		resp.ParseError = "missing transaction for ok status"
+	}
 	return resp, nil
 }
 
-// ListTransactions returns paginated transactions with optional filters.
+// ListTransactionsransactions returns paginated transactions with optional filters.
 // from/to are local calendar dates YYYY-MM-DD; to is inclusive.
 func (s *Service) ListTransactions(ctx context.Context, q string, limit, offset int, unlabeled bool, personID *int64, fromDate, toDate string) ([]model.Transaction, int, error) {
 	f := store.TxnFilter{

@@ -142,7 +142,7 @@ CREATE INDEX IF NOT EXISTS idx_raw_sms_status ON raw_sms(status);
 	if err := s.migrateFeatures(); err != nil {
 		return fmt.Errorf("migrate features: %w", err)
 	}
-	
+
 	// SMS idempotency fingerprint (exact body hash).
 	if !s.columnExists("raw_sms", "fingerprint") {
 		if _, err := s.db.Exec(`ALTER TABLE raw_sms ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`); err != nil {
@@ -151,6 +151,17 @@ CREATE INDEX IF NOT EXISTS idx_raw_sms_status ON raw_sms(status);
 	}
 	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_sms_fingerprint ON raw_sms(fingerprint) WHERE fingerprint != ''`); err != nil {
 		return fmt.Errorf("migrate fingerprint index: %w", err)
+	}
+	// one transaction per raw SMS
+	var dup int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT raw_sms_id FROM transactions GROUP BY raw_sms_id HAVING COUNT(*) > 1
+	)`).Scan(&dup)
+	if dup > 0 {
+		return fmt.Errorf("migrate: found %d duplicate raw_sms_id in transactions; fix data before unique index", dup)
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_raw_sms_id ON transactions(raw_sms_id)`); err != nil {
+		return fmt.Errorf("migrate txn raw_sms unique: %w", err)
 	}
 	if err := s.backfillKindAndNorm(); err != nil {
 		return fmt.Errorf("backfill kind: %w", err)
@@ -614,4 +625,120 @@ WHERE kind = '' OR kind IS NULL OR merchant_norm = '' OR merchant_norm IS NULL`)
 		}
 	}
 	return nil
+}
+
+
+// IngestParse holds a fully decided parse outcome before DB write.
+type IngestParse struct {
+	Status       model.ParseStatus
+	IgnoreReason string
+	ParseError   string
+	MatchedRule  string
+	Transaction  *model.Transaction // nil unless StatusOK
+}
+
+// PersistIngestResult atomically stores raw SMS + optional transaction.
+// Parse is done outside. Never leaves permanent pending for new inserts.
+func (s *Store) PersistIngestResult(ctx context.Context, text, source string, parse IngestParse) (InsertRawSMSResult, *model.Transaction, error) {
+	fp := SMSFingerprint(text)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if source == "" {
+		source = "shortcut"
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InsertRawSMSResult{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+INSERT INTO raw_sms (text, source, status, error, created_at, fingerprint)
+VALUES (?, ?, ?, ?, ?, ?)`,
+		text, source, parse.Status, firstNonEmpty(parse.ParseError, parse.IgnoreReason), now, fp,
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			// existing fingerprint — return committed final state
+			var out InsertRawSMSResult
+			var status, errMsg string
+			qerr := tx.QueryRowContext(ctx, `SELECT id, status, error FROM raw_sms WHERE fingerprint = ?`, fp).
+				Scan(&out.ID, &status, &errMsg)
+			if qerr != nil {
+				return InsertRawSMSResult{}, nil, err
+			}
+			out.Duplicate = true
+			out.Status = model.ParseStatus(status)
+			out.Error = errMsg
+			// load txn if any (same connection via tx)
+			var txnID sql.NullInt64
+			_ = tx.QueryRowContext(ctx, `SELECT id FROM transactions WHERE raw_sms_id = ?`, out.ID).Scan(&txnID)
+			if err := tx.Commit(); err != nil {
+				return InsertRawSMSResult{}, nil, err
+			}
+			var txn *model.Transaction
+			if txnID.Valid {
+				t, err := s.GetTransaction(ctx, txnID.Int64)
+				if err == nil {
+					txn = &t
+				}
+			}
+			return out, txn, nil
+		}
+		return InsertRawSMSResult{}, nil, err
+	}
+	rawID, _ := res.LastInsertId()
+
+	var savedTxn *model.Transaction
+	if parse.Status == model.ParseStatusOK && parse.Transaction != nil {
+		txn := *parse.Transaction
+		txn.RawSMSID = rawID
+		if txn.OccurredAt.IsZero() {
+			txn.OccurredAt = time.Now()
+		}
+		var bal any
+		known := 0
+		if txn.BalanceKnown {
+			bal = txn.BalanceAfter
+			known = 1
+		}
+		tres, err := tx.ExecContext(ctx, `
+INSERT INTO transactions (
+    raw_sms_id, amount, currency, direction, merchant, merchant_norm, card_last4,
+    occurred_at, category, kind, note, bank, balance_after, balance_known, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rawID, txn.Amount, txn.Currency, txn.Direction, txn.Merchant, txn.MerchantNorm, txn.CardLast4,
+			txn.OccurredAt.UTC().Format(time.RFC3339Nano), txn.Category, txn.Kind, txn.Note, txn.Bank,
+			bal, known, now,
+		)
+		if err != nil {
+			return InsertRawSMSResult{}, nil, err
+		}
+		tid, _ := tres.LastInsertId()
+		txn.ID = tid
+		txn.CreatedAt = time.Now().UTC()
+		savedTxn = &txn
+	}
+
+	if err := tx.Commit(); err != nil {
+		return InsertRawSMSResult{}, nil, err
+	}
+
+	// apply rules outside txn (best-effort) if we have a new txn
+	if savedTxn != nil {
+		_ = s.ApplyRulesToTxn(ctx, savedTxn.ID)
+		if updated, err := s.GetTransaction(ctx, savedTxn.ID); err == nil {
+			savedTxn = &updated
+		}
+	}
+	return InsertRawSMSResult{ID: rawID, Status: parse.Status, Error: firstNonEmpty(parse.ParseError, parse.IgnoreReason)}, savedTxn, nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
