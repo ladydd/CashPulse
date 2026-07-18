@@ -51,15 +51,15 @@ CREATE TABLE IF NOT EXISTS goals (
 // ---- Budgets ----
 
 type Budget struct {
-	ID        int64   `json:"id"`
-	Month     string  `json:"month"`
-	PersonID  *int64  `json:"person_id,omitempty"`
-	PersonName string `json:"person_name,omitempty"`
-	Kind      string  `json:"kind"`
-	Amount    float64 `json:"amount"`
-	Spent     float64 `json:"spent"`
-	Pct       float64 `json:"pct"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	Month      string    `json:"month"`
+	PersonID   *int64    `json:"person_id,omitempty"`
+	PersonName string    `json:"person_name,omitempty"`
+	Kind       string    `json:"kind"`
+	Amount     float64   `json:"amount"`
+	Spent      float64   `json:"spent"`
+	Pct        float64   `json:"pct"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 func (s *Store) ListBudgets(ctx context.Context, month string, loc *time.Location) ([]Budget, error) {
@@ -78,10 +78,10 @@ ORDER BY b.person_id IS NOT NULL, b.id`, month)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	start, _ := time.ParseInLocation("2006-01", month, loc)
-	end := start.AddDate(0, 1, 0)
+	// Read and close the result set before calculating spend. The store deliberately
+	// uses one SQLite connection, so issuing nested queries while rows is open would
+	// wait forever for that same connection.
 	var out []Budget
 	for rows.Next() {
 		var b Budget
@@ -96,20 +96,32 @@ ORDER BY b.person_id IS NOT NULL, b.id`, month)
 			b.PersonName = pname
 		}
 		b.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		spent, err := s.budgetSpent(ctx, start, end, b.PersonID, b.Kind)
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	start, _ := time.ParseInLocation("2006-01", month, loc)
+	end := start.AddDate(0, 1, 0)
+	for i := range out {
+		spent, err := s.budgetSpent(ctx, start, end, out[i].PersonID, out[i].Kind)
 		if err != nil {
 			return nil, err
 		}
-		b.Spent = spent
-		if b.Amount > 0 {
-			b.Pct = round2(b.Spent / b.Amount * 100)
+		out[i].Spent = spent
+		if out[i].Amount > 0 {
+			out[i].Pct = round2(out[i].Spent / out[i].Amount * 100)
 		}
-		out = append(out, b)
 	}
 	if out == nil {
 		out = []Budget{}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Store) budgetSpent(ctx context.Context, from, toExclusive time.Time, personID *int64, kind string) (float64, error) {
@@ -143,21 +155,34 @@ func (s *Store) UpsertBudget(ctx context.Context, month string, personID *int64,
 	if personID != nil {
 		pid = *personID
 	}
-	// try update existing
+	// A UNIQUE constraint treats NULL values as distinct in SQLite. Update with an
+	// explicit NULL-safe predicate first so a global budget is a true upsert too.
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO budgets (month, person_id, kind, amount, created_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(month, person_id, kind) DO UPDATE SET amount = excluded.amount`,
-		month, pid, kind, amount, now)
+UPDATE budgets SET amount = ?
+WHERE month = ? AND kind = ?
+  AND ((person_id IS NULL AND ? IS NULL) OR person_id = ?)`,
+		amount, month, kind, pid, pid)
 	if err != nil {
-		// SQLite UNIQUE with NULL person_id is tricky; fallback delete+insert
-		_, _ = s.db.ExecContext(ctx, `DELETE FROM budgets WHERE month=? AND kind=? AND ((person_id IS NULL AND ? IS NULL) OR person_id = ?)`,
-			month, kind, pid, pid)
-		res, err = s.db.ExecContext(ctx, `INSERT INTO budgets (month, person_id, kind, amount, created_at) VALUES (?,?,?,?,?)`,
-			month, pid, kind, amount, now)
+		return Budget{}, err
+	}
+	if affected, _ := res.RowsAffected(); affected > 0 {
+		var id int64
+		err = s.db.QueryRowContext(ctx, `
+SELECT id FROM budgets
+WHERE month = ? AND kind = ?
+  AND ((person_id IS NULL AND ? IS NULL) OR person_id = ?)
+ORDER BY id LIMIT 1`, month, kind, pid, pid).Scan(&id)
 		if err != nil {
 			return Budget{}, err
 		}
+		return Budget{ID: id, Month: month, PersonID: personID, Kind: kind, Amount: amount}, nil
+	}
+
+	res, err = s.db.ExecContext(ctx, `
+INSERT INTO budgets (month, person_id, kind, amount, created_at)
+VALUES (?, ?, ?, ?, ?)`, month, pid, kind, amount, now)
+	if err != nil {
+		return Budget{}, err
 	}
 	id, _ := res.LastInsertId()
 	b := Budget{ID: id, Month: month, PersonID: personID, Kind: kind, Amount: amount}
@@ -179,18 +204,18 @@ func (s *Store) DeleteBudget(ctx context.Context, id int64) error {
 // ---- Label rules ----
 
 type LabelRule struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	MatchField  string `json:"match_field"`
-	MatchOp     string `json:"match_op"`
-	MatchValue  string `json:"match_value"`
-	PersonID    *int64 `json:"person_id,omitempty"`
-	PersonName  string `json:"person_name,omitempty"`
-	TagID       *int64 `json:"tag_id,omitempty"`
-	TagName     string `json:"tag_name,omitempty"`
-	Enabled     bool   `json:"enabled"`
-	Priority    int    `json:"priority"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	Name       string    `json:"name"`
+	MatchField string    `json:"match_field"`
+	MatchOp    string    `json:"match_op"`
+	MatchValue string    `json:"match_value"`
+	PersonID   *int64    `json:"person_id,omitempty"`
+	PersonName string    `json:"person_name,omitempty"`
+	TagID      *int64    `json:"tag_id,omitempty"`
+	TagName    string    `json:"tag_name,omitempty"`
+	Enabled    bool      `json:"enabled"`
+	Priority   int       `json:"priority"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 func (s *Store) ListRules(ctx context.Context) ([]LabelRule, error) {
@@ -471,20 +496,20 @@ ORDER BY COUNT(*) DESC`)
 // ---- Digest ----
 
 type Digest struct {
-	Date            string             `json:"date"`
-	TodayExpense    float64            `json:"today_expense"`
-	TodayIncome     float64            `json:"today_income"`
-	TodayTxnCount   int                `json:"today_txn_count"`
-	TodayConsume    float64            `json:"today_consume"`
-	WeekExpense     float64            `json:"week_expense"`
-	WeekConsume     float64            `json:"week_consume"`
-	LatestBalance   float64            `json:"latest_balance,omitempty"`
-	BalanceKnown    bool               `json:"balance_known"`
-	DaysOfRunway    float64            `json:"days_of_runway"`
-	UnlabeledToday  int                `json:"unlabeled_today"`
-	UnlabeledWeek   int                `json:"unlabeled_week"`
-	TopToday        []model.Transaction `json:"top_today"`
-	Anomalies       []string           `json:"anomalies"`
+	Date           string              `json:"date"`
+	TodayExpense   float64             `json:"today_expense"`
+	TodayIncome    float64             `json:"today_income"`
+	TodayTxnCount  int                 `json:"today_txn_count"`
+	TodayConsume   float64             `json:"today_consume"`
+	WeekExpense    float64             `json:"week_expense"`
+	WeekConsume    float64             `json:"week_consume"`
+	LatestBalance  float64             `json:"latest_balance,omitempty"`
+	BalanceKnown   bool                `json:"balance_known"`
+	DaysOfRunway   float64             `json:"days_of_runway"`
+	UnlabeledToday int                 `json:"unlabeled_today"`
+	UnlabeledWeek  int                 `json:"unlabeled_week"`
+	TopToday       []model.Transaction `json:"top_today"`
+	Anomalies      []string            `json:"anomalies"`
 }
 
 func (s *Store) Digest(ctx context.Context, loc *time.Location) (*Digest, error) {

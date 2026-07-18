@@ -224,7 +224,7 @@ func (s *Store) Analytics(ctx context.Context, q AnalyticsQuery) (*Analytics, er
 	}
 	out.ByKind = byKind
 
-	byPerson, err := s.PersonStats(ctx, from, toEnd, rangeTot.Expense)
+	byPerson, err := s.PersonStats(ctx, from, toEnd, rangeTot.Expense, kind)
 	if err != nil {
 		return nil, err
 	}

@@ -4,7 +4,7 @@
 /server
 *.exe
 
-# Data
+# Data & personal SMS exports
 /data/
 /tmp/
 *.db
@@ -12,13 +12,14 @@
 *.db-wal
 *.db-shm
 
-# Env
+# Env / secrets
 .env
 .env.local
 
-# Frontend
+# Frontend build deps
 web/node_modules/
 web/dist/
+web/.vite/
 
 # IDE / OS
 .idea/
@@ -26,3 +27,9 @@ web/dist/
 .DS_Store
 *.swp
 *.log
+
+# Local reference clones & UI experiments (not product source)
+/refs/
+/web-legacy/
+/web-v2-cards/
+/web-v3-actual/

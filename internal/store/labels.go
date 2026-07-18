@@ -606,20 +606,25 @@ LIMIT ?`, limit)
 }
 
 // PersonStats aggregates by person in [from, toExclusive).
-func (s *Store) PersonStats(ctx context.Context, from, toExclusive time.Time, totalExpense float64) ([]model.PersonStat, error) {
-	rows, err := s.db.QueryContext(ctx, `
+// kind: all|consume|transfer|... empty/all means no kind filter.
+func (s *Store) PersonStats(ctx context.Context, from, toExclusive time.Time, totalExpense float64, kind string) ([]model.PersonStat, error) {
+	q := `
 SELECT t.person_id, COALESCE(p.name, '未标记') AS person_name, COALESCE(p.color, '#8a897c') AS color,
        SUM(CASE WHEN t.direction = 'out' THEN t.amount ELSE 0 END) AS expense,
        SUM(CASE WHEN t.direction = 'in' THEN t.amount ELSE 0 END) AS income,
        COUNT(*) AS cnt
 FROM transactions t
 LEFT JOIN people p ON p.id = t.person_id
-WHERE t.occurred_at >= ? AND t.occurred_at < ?
+WHERE t.occurred_at >= ? AND t.occurred_at < ?`
+	args := []any{from.UTC().Format(time.RFC3339Nano), toExclusive.UTC().Format(time.RFC3339Nano)}
+	if kind != "" && kind != "all" {
+		q += ` AND t.kind = ?`
+		args = append(args, kind)
+	}
+	q += `
 GROUP BY t.person_id, p.name, p.color
-ORDER BY expense DESC, income DESC`,
-		from.UTC().Format(time.RFC3339Nano),
-		toExclusive.UTC().Format(time.RFC3339Nano),
-	)
+ORDER BY expense DESC, income DESC`
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
