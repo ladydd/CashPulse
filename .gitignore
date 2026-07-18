@@ -33,3 +33,6 @@ web/.vite/
 /web-legacy/
 /web-v2-cards/
 /web-v3-actual/
+
+# Local-only notes (do not publish)
+docs/PROJECT_CLOSEOUT_*.md
