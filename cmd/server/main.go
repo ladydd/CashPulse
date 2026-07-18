@@ -46,6 +46,7 @@ func main() {
 		IngestToken: cfg.IngestToken,
 		AdminToken:  cfg.AdminToken,
 		Sessions:    sess,
+		Guard:       auth.NewLoginGuard(),
 	}
 	h := api.NewHandler(svc, a)
 

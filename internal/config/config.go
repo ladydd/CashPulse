@@ -47,7 +47,7 @@ func Load() (Config, error) {
 		AdminPassword: adminPass,
 		SessionSecret: os.Getenv("SESSION_SECRET"),
 		SecureCookie:  os.Getenv("SECURE_COOKIE") == "1" || os.Getenv("SECURE_COOKIE") == "true",
-		SessionTTL:    7 * 24 * time.Hour,
+		SessionTTL:    30 * 24 * time.Hour, // stay logged in ~1 month
 	}
 
 	if h := os.Getenv("SESSION_TTL_HOURS"); h != "" {

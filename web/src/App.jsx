@@ -50,7 +50,6 @@ function useAuth() {
 
 function LoginPage({ passwordLogin, onSuccess, setError }) {
   const [pw, setPw] = useState('')
-  const [tok, setTok] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function doLogin() {
@@ -66,18 +65,17 @@ function LoginPage({ passwordLogin, onSuccess, setError }) {
     }
   }
 
-  async function doToken() {
-    setBusy(true)
-    setError('')
-    try {
-      setToken(tok)
-      await api.digest()
-      onSuccess()
-    } catch (e) {
-      setError(e.message || 'Token 无效')
-    } finally {
-      setBusy(false)
-    }
+  if (!passwordLogin) {
+    return (
+      <div className="login-page">
+        <div className="login-panel" style={{ gridColumn: '1 / -1' }}>
+          <div className="login-form">
+            <h2>无法登录</h2>
+            <p>服务器未配置 ADMIN_PASSWORD。</p>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -85,34 +83,30 @@ function LoginPage({ passwordLogin, onSuccess, setError }) {
       <div className="login-art">
         <div className="login-logo"><span>¥</span> CashPulse</div>
         <div className="login-quote">
-          <span>PERSONAL FINANCE, CLEARLY</span>
-          <h1>让每一笔钱，<br />都有清晰的去向。</h1>
-          <p>银行短信自动入库 · 消费与转账分开 · 数据只在你自己的服务器上。</p>
-        </div>
-        <div className="art-balance">
-          <span>本月节奏</span>
-          <div><i /><i /><i /><i /><i /><i /><i /></div>
+          <span>PRIVATE LEDGER</span>
+          <h1>你的私人账本</h1>
+          <p>登录后会记住会话，日常打开不用反复输密码。</p>
         </div>
       </div>
       <div className="login-panel">
         <div className="login-form">
-          <span className="eyebrow">WELCOME</span>
-          <h2>进入你的账本</h2>
-          <p>参考 Actual 的冷静结构 + Maybe 的清晰首页。</p>
-          {passwordLogin ? (
-            <>
-              <label>管理员密码</label>
-              <input id="login-password" className="field" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="ADMIN_PASSWORD" onKeyDown={(e) => e.key === 'Enter' && doLogin()} />
-              <button id="btn-login" className="btn primary login-submit" disabled={busy} onClick={doLogin}>登录</button>
-            </>
-          ) : (
-            <div className="login-note">未配置 ADMIN_PASSWORD 时，请使用管理 Token。</div>
-          )}
-          <div className="login-divider"><span>或使用 Token</span></div>
-          <div className="token-login">
-            <input id="login-token" className="field" type="password" value={tok} onChange={(e) => setTok(e.target.value)} placeholder="ADMIN_TOKEN / API_TOKEN" />
-            <button id="btn-login-token" className="btn" disabled={busy} onClick={doToken}>继续</button>
-          </div>
+          <span className="eyebrow">LOGIN</span>
+          <h2>登录</h2>
+          <p>仅密码 · 防暴力尝试</p>
+          <label>密码</label>
+          <input
+            id="login-password"
+            className="field"
+            type="password"
+            autoComplete="current-password"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && !busy && pw && doLogin()}
+            placeholder="管理密码"
+          />
+          <button id="btn-login" className="btn primary login-submit" disabled={busy || !pw} onClick={doLogin}>
+            {busy ? '登录中…' : '登录'}
+          </button>
         </div>
       </div>
     </div>
@@ -754,7 +748,7 @@ function Settings({ data, onRefresh, setError, setNotice }) {
       </section>
 
       <section className="card settings-card">
-        <h3>导出 / Token / 卡</h3>
+        <h3>导出 / 银行卡</h3>
         <div className="form-row">
           <input className="field" type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} />
           <input className="field" type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} />
@@ -778,11 +772,7 @@ function Settings({ data, onRefresh, setError, setNotice }) {
             下载 CSV
           </button>
         </div>
-        <div className="form-row" style={{ marginTop: 12 }}>
-          <input className="field grow mono" type="password" value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} placeholder="ADMIN_TOKEN" />
-          <button type="button" className="btn" onClick={() => { setToken(tokenInput); setNotice('Token 已保存') }}>保存 Token</button>
-          <button type="button" className="btn ghost" onClick={() => { clearToken(); setTokenInput(''); setNotice('Token 已清除') }}>清除</button>
-        </div>
+
         <div className="cards-row" style={{ marginTop: 12 }}>
           {(data.cards || []).map((c) => (
             <span key={c.card_last4}>尾号 {c.card_last4} · {c.bank || '卡'} · {c.txn_count} 笔</span>
