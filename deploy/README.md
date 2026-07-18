@@ -33,3 +33,7 @@
 ```bash
 sqlite3 /var/lib/cashpulse/cashpulse.db ".backup '/var/backups/cashpulse-$(date +%F).db'"
 ```
+
+## Note
+
+Source code may be public; keep `.env` and SQLite volumes private on the host.

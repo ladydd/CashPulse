@@ -1,72 +1,104 @@
 # CashPulse
 
-银行短信流水收集与消费分析。iPhone 快捷指令转发完整短信 → Go API 解析落库 → Web 看板查看。
+Self-hosted personal finance from **bank SMS**.
 
-## 功能
+iPhone Shortcut (or any client) posts the full SMS body → Go API parses & stores → React dashboard for spend analysis, budgets, and household labeling.
 
-- `POST /api/v1/sms` 接收完整短信原文（`INGEST_TOKEN`）
-- 邮储等短信解析：金额 / 收支 / 渠道归一 / 类型（消费·转账·理财…）/ 余额 / 时间
-- 原始短信始终落库；解析失败可查看
-- **今日首页**：账户余额、当月收支、预算余量、消费节奏、最近流水
-- **分析**：按月（主）/ 7·15·30·90 天 / 全部；消费与转账拆分；谁花了多少
-- **整理**：按日打归属人与标签；支持自动打标规则
-- 预算、存钱目标、CSV 导出、银行卡汇总
-- 鉴权：网页 **仅管理员密码**（Session 持久化到 SQLite，约 30 天）；短信上报用独立 `INGEST_TOKEN`；`ADMIN_TOKEN` 仅可选给脚本
-- 响应式 Web（React）：桌面侧栏 + 移动底栏
+**License:** MIT
 
-## 技术栈
+## Features
 
-| 层 | 选型 |
-|----|------|
-| 后端 | Go 1.22+、标准库 `net/http` |
-| 存储 | SQLite（`modernc.org/sqlite`） |
-| 前端 | Vite + React + Chart.js（产物 embed 进二进制） |
+- `POST /api/v1/sms` ingest of full SMS text (`INGEST_TOKEN`)
+- PSBC (邮储) parsers: amount, direction, merchant normalization, kind (consume / transfer / invest / …), balance, time
+- Raw SMS always stored; parse failures retained
+- Home: balance, month in/out, budget remaining, daily spend (by **amount**), recent activity
+- Analysis: month-first ranges, spend vs transfer, “who spent how much”
+- Labeling: person + tags, auto rules on ingest
+- Budgets, savings goals, CSV export, card summary
+- Auth: **web = admin password + session** (SQLite-backed, ~30 days sliding); SMS uses separate ingest token
+- Responsive React UI (desktop sidebar + mobile bottom nav)
+- Single binary with embedded UI; SQLite storage
 
-## 快速开始
+## Stack
+
+| Layer | Choice |
+|-------|--------|
+| API | Go 1.22+, `net/http` |
+| DB | SQLite (`modernc.org/sqlite`) |
+| Web | Vite + React + Chart.js (embedded in binary) |
+
+## Quick start
 
 ```bash
-# 前端
+# Web
 cd web && npm install && npm run build && cd ..
 mkdir -p cmd/server/dist && cp -R web/dist/. cmd/server/dist/
 
-# 后端
+# Server
 go build -o bin/cashpulse ./cmd/server
 
-# 运行（开发示例）
-API_TOKEN=dev-token \
-INGEST_TOKEN=dev-token \
-ADMIN_PASSWORD=admin-pass \
-PORT=8080 \
-DATABASE_PATH=./data/cashpulse.db \
+# Run (dev example — change secrets)
+export INGEST_TOKEN=dev-ingest
+export ADMIN_PASSWORD=dev-password
+export PORT=8080
+export DATABASE_PATH=./data/cashpulse.db
+export TZ_NAME=Asia/Shanghai
 ./bin/cashpulse
 ```
 
-浏览器打开 http://127.0.0.1:8080 ，密码 `admin-pass` 或 Token `dev-token`。
+Open http://127.0.0.1:8080 and sign in with `ADMIN_PASSWORD`.
 
-导入历史短信 CSV（只用 `text` 列）：
+Import historical SMS export (uses **text** column only for CSV):
 
 ```bash
-go run ./cmd/import -file tmp/xxx.csv -db ./data/cashpulse.db -reset
+go run ./cmd/import -file path/to/export.csv -db ./data/cashpulse.db
 ```
 
-## 配置
+## Configuration
 
-见 `.env.example` 与 `deploy/`。
+See `.env.example` and `deploy/`.
 
-| 变量 | 含义 |
-|------|------|
-| `INGEST_TOKEN` | 仅短信上报 |
-| `ADMIN_PASSWORD` | **必填**，浏览器登录 |
-| `INGEST_TOKEN` | 短信上报专用 |
-| `ADMIN_TOKEN` | 可选，脚本调管理 API |
-| `DATABASE_PATH` | SQLite 路径 |
-| `SECURE_COOKIE` | HTTPS 下设 `true` |
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ADMIN_PASSWORD` | **yes** | Web login password |
+| `INGEST_TOKEN` | **yes** | SMS upload only |
+| `ADMIN_TOKEN` | no | Optional Bearer for scripts (not the web UI) |
+| `DATABASE_PATH` | no | SQLite path (default `./data/cashpulse.db`) |
+| `PORT` | no | Listen port (default `8080`) |
+| `TZ_NAME` | no | Timezone for parse/stats/CSV (default `Asia/Shanghai`) |
+| `SECURE_COOKIE` | no | `true` behind HTTPS |
+| `SESSION_TTL_HOURS` | no | Session lifetime hours (default ~720) |
 
-## 部署
+`API_TOKEN` still works as a legacy fallback for `INGEST_TOKEN` if ingest is unset.
 
-见 `deploy/README.md`（systemd + Caddy 示例）。
+## SMS upload
 
-## 说明
+```http
+POST /api/v1/sms
+Authorization: Bearer <INGEST_TOKEN>
+Content-Type: application/json
 
-- 个人项目；流水数据与短信导出请勿提交仓库（已在 `.gitignore`）。
-- 私有备份：GitHub `ladydd/CashPulse`。
+{"text":"【邮储银行】…full SMS…","source":"iphone"}
+```
+
+Identical SMS bodies are deduplicated (SHA-256 of normalized text). Concurrent retries return the same transaction with `"duplicate": true`.
+
+## Deploy
+
+See [`deploy/README.md`](deploy/README.md) for Docker / Caddy / systemd examples.
+
+Your **production secrets and SQLite data live only on your server**, not in this repository. Cloning the public repo does not expose anyone else’s ledgers.
+
+## Local development vs open source
+
+- This GitHub tree is the shared **source code**.
+- Local `./data/`, `./tmp/`, and `.env` are gitignored — keep your real SMS and passwords there.
+- Deployed instances (your own domain, tokens, DB) are independent of other forks/clones.
+
+## Security
+
+See [SECURITY.md](SECURITY.md).
+
+## Contributing
+
+Issues and PRs welcome: more bank SMS patterns, parsers, and UI polish. Please do not commit real SMS dumps or production credentials.
