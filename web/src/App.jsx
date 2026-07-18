@@ -2,6 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { api, clearToken, getToken, setToken } from './api/client'
 import { currentMonth, greeting, money, monthLabel, shiftMonth, ymd, fmtTime } from './lib/format'
+
+function clampMonth(ym) {
+  const cur = currentMonth()
+  if (!ym) return cur
+  return ym > cur ? cur : ym
+}
+
+function canGoNextMonth(ym) {
+  return (ym || currentMonth()) < currentMonth()
+}
+
 import { ChartsDaily, ChartsDonut, ChartsHBar, ChartsMonthly, ChartsBalance } from './components/Charts.jsx'
 import './styles.css'
 
@@ -163,26 +174,27 @@ function Home({ data, onRefresh, onNav, onMonth }) {
           <div className="month-hero-nav">
             <button type="button" className="icon-btn" onClick={() => onMonth(shiftMonth(data.periodMonth || currentMonth(), -1))} aria-label="上个月">‹</button>
             <h2>{monthLabel(data.periodMonth)}</h2>
-            <button type="button" className="icon-btn" onClick={() => onMonth(shiftMonth(data.periodMonth || currentMonth(), 1))} aria-label="下个月">›</button>
+            <button type="button" className="icon-btn" disabled={!canGoNextMonth(data.periodMonth)} onClick={() => onMonth(clampMonth(shiftMonth(data.periodMonth || currentMonth(), 1)))} aria-label="下个月">›</button>
             <button type="button" className="btn ghost" onClick={() => onMonth(currentMonth())}>本月</button>
             <input
               type="month"
               className="field month-input"
               value={data.periodMonth || currentMonth()}
-              onChange={(e) => onMonth(e.target.value)}
+              max={currentMonth()}
+              onChange={(e) => onMonth(clampMonth(e.target.value))}
               title="选择月份"
             />
           </div>
         </div>
-        <button className="icon-btn" type="button" onClick={onRefresh} title="刷新">↻</button>
+        <button className="icon-btn" type="button" onClick={() => onRefresh()} title="刷新">↻</button>
       </header>
 
       <section className="hero-grid">
         <article className="balance-hero">
           <div className="hero-glow" />
-          <div className="balance-top"><span>账户余额</span><span className="live-dot">已同步</span></div>
+          <div className="balance-top"><span>最近余额</span><span className="live-dot">已同步</span></div>
           <div className="balance-value">{a.balance_known ? money(a.latest_balance) : '暂无余额'}</div>
-          <div className="balance-time">{a.latest_balance_at ? `更新于 ${fmtTime(a.latest_balance_at)}` : '等待短信中的余额'}</div>
+          <div className="balance-time">{a.latest_balance_at ? `更新于 ${fmtTime(a.latest_balance_at)}${a.latest_card_last4 ? ` · 尾号${a.latest_card_last4}` : ''}` : '等待短信中的余额'}</div>
           <div className="balance-stats">
             <div><span>本月收入</span><strong>+{money(range.income)}</strong></div>
             <div><span>本月支出</span><strong>−{money(range.expense)}</strong></div>
@@ -219,10 +231,10 @@ function Home({ data, onRefresh, onNav, onMonth }) {
       </section>
 
       <section className="quick-grid">
-        <article className="quick-stat"><span className="quick-icon coral">今</span><div><span>今天花了</span><strong>{money(d.today_consume || a.today?.expense)}</strong><small>{d.today_txn_count || 0} 笔</small></div></article>
+        <article className="quick-stat"><span className="quick-icon coral">今</span><div><span>今天花了</span><strong>{money(d.today_consume ?? a.today?.expense ?? 0)}</strong><small>{d.today_txn_count ?? 0} 笔</small></div></article>
         <article className="quick-stat"><span className="quick-icon blue">均</span><div><span>日均消费</span><strong>{money(range.avg_daily_expense)}</strong><small>{range.active_days || 0} 个消费日</small></div></article>
         <article className="quick-stat"><span className="quick-icon green">安</span><div><span>资金安全垫</span><strong>{a.balance_health?.days_of_runway ? `${Math.round(a.balance_health.days_of_runway)} 天` : '—'}</strong><small>按消费日均</small></div></article>
-        <article className="quick-stat actionable" onClick={() => onNav('/organize')}><span className="quick-icon amber">理</span><div><span>等待整理</span><strong>{d.unlabeled_week || a.unlabeled_count || 0} 笔</strong><small>点此去归类</small></div></article>
+        <article className="quick-stat actionable" onClick={() => onNav('/organize')}><span className="quick-icon amber">理</span><div><span>等待整理</span><strong>{d.unlabeled_week ?? a.unlabeled_count ?? 0} 笔</strong><small>点此去归类</small></div></article>
       </section>
 
       <section className="home-content">
@@ -281,7 +293,7 @@ function TxnList({ items, empty = '暂无流水' }) {
   )
 }
 
-function Transactions({ data, onSearch, onRefresh }) {
+function Transactions({ data, onSearch, onRefresh, onLoadMore, total = 0, loadingMore = false }) {
   const [q, setQ] = useState(data.search || '')
   const groups = useMemo(() => {
     const m = new Map()
@@ -298,13 +310,14 @@ function Transactions({ data, onSearch, onRefresh }) {
     <div className="page-enter narrow-page">
       <div className="page-title">
         <div><span className="eyebrow">LEDGER</span><h2>全部流水</h2><p>按发生日期排列 · 柱状图看金额不看笔数</p></div>
-        <button className="icon-btn" type="button" onClick={onRefresh}>↻</button>
+        <button className="icon-btn" type="button" onClick={() => onRefresh()}>↻</button>
       </div>
       <section className="search-bar">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索商户、分类…" onKeyDown={(e) => e.key === 'Enter' && onSearch(q)} />
         <button type="button" className="btn primary" onClick={() => onSearch(q)}>搜索</button>
       </section>
       <div className="result-meta">{data.search ? `「${data.search}」· ` : ''}{data.transactions?.length || 0} 笔</div>
+      <div className="result-meta">已显示 {data.transactions?.length || 0}{total ? ` / 共 ${total}` : ''} 笔</div>
       <section className="card">
         {groups.length ? groups.map(([date, items]) => (
           <div className="txn-group" key={date}>
@@ -312,6 +325,13 @@ function Transactions({ data, onSearch, onRefresh }) {
             <TxnList items={items} />
           </div>
         )) : <div className="empty-state"><strong>没有找到流水</strong></div>}
+        {total > (data.transactions?.length || 0) ? (
+          <div style={{ padding: 16, textAlign: 'center' }}>
+            <button type="button" className="btn primary" disabled={loadingMore} onClick={() => onLoadMore?.()}>
+              {loadingMore ? '加载中…' : '加载更多'}
+            </button>
+          </div>
+        ) : null}
       </section>
     </div>
   )
@@ -329,20 +349,21 @@ function Analysis({ data, period, setPeriod, onRefresh }) {
     <div className="page-enter">
       <div className="page-title">
         <div><span className="eyebrow">INSIGHTS</span><h2>消费分析</h2><p>默认看消费金额，转账可单独切换。</p></div>
-        <button className="icon-btn" type="button" onClick={onRefresh}>↻</button>
+        <button className="icon-btn" type="button" onClick={() => onRefresh()}>↻</button>
       </div>
 
       <section className="analysis-controls">
         <div className="month-hero-nav solid">
           <button type="button" className="icon-btn" onClick={() => setPeriod({ ...period, mode: 'month', month: shiftMonth(period.month || currentMonth(), -1) })}>‹</button>
           <strong className="month-title">{monthLabel(period.mode === 'month' ? (period.month || currentMonth()) : (period.month || currentMonth()))}</strong>
-          <button type="button" className="icon-btn" onClick={() => setPeriod({ ...period, mode: 'month', month: shiftMonth(period.month || currentMonth(), 1) })}>›</button>
+          <button type="button" className="icon-btn" disabled={!canGoNextMonth(period.month)} onClick={() => setPeriod({ ...period, mode: 'month', month: clampMonth(shiftMonth(period.month || currentMonth(), 1)) })}>›</button>
           <button type="button" className="btn ghost" onClick={() => setPeriod({ ...period, mode: 'month', month: currentMonth() })}>本月</button>
           <input
             type="month"
             className="field month-input"
             value={period.month || currentMonth()}
-            onChange={(e) => setPeriod({ ...period, mode: 'month', month: e.target.value })}
+            max={currentMonth()}
+            onChange={(e) => setPeriod({ ...period, mode: 'month', month: clampMonth(e.target.value) })}
           />
         </div>
         <div className="seg">
@@ -488,8 +509,10 @@ function Organize({ data, onRefresh, onLabel }) {
     setQueue(res.items || [])
   }, [onlyUnlabeled, range.from, range.to])
 
+  const [loadErr, setLoadErr] = useState('')
   useEffect(() => {
-    load().catch(() => {})
+    setLoadErr('')
+    load().catch((e) => setLoadErr(e.message || '加载失败'))
   }, [load])
 
   return (
@@ -514,7 +537,9 @@ function Organize({ data, onRefresh, onLabel }) {
             <span>只看未归类</span>
           </label>
         </div>
-        {!data.people?.length ? (
+        {loadErr ? (
+          <div className="empty-state"><strong>加载失败</strong><p>{loadErr}</p></div>
+        ) : !data.people?.length ? (
           <div className="empty-state"><strong>先添加归属人</strong><p>到设置里加「我 / 老婆 / 孩子」</p></div>
         ) : !queue.length ? (
           <div className="empty-state success"><strong>已经整理完了</strong></div>
@@ -582,7 +607,7 @@ function Organize({ data, onRefresh, onLabel }) {
   )
 }
 
-function Settings({ data, onRefresh, setError, setNotice }) {
+function Settings({ data, onRefresh, setError, setNotice, budgetMonth }) {
   const [budgetAmount, setBudgetAmount] = useState('')
   const [budgetKind, setBudgetKind] = useState('consume')
   const [budgetPerson, setBudgetPerson] = useState('')
@@ -608,7 +633,7 @@ function Settings({ data, onRefresh, setError, setNotice }) {
       </div>
 
       <section className="card settings-card">
-        <h3>月度预算</h3>
+        <h3>月度预算（{budgetMonth || data.periodMonth || currentMonth()}）</h3>
         <div className="form-row">
           <input className="field" type="number" placeholder="金额" value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} />
           <select className="field" value={budgetKind} onChange={(e) => setBudgetKind(e.target.value)}>
@@ -625,8 +650,9 @@ function Settings({ data, onRefresh, setError, setNotice }) {
             className="btn primary"
             onClick={async () => {
               try {
+                const m = budgetMonth || data.periodMonth || currentMonth()
                 await api.upsertBudget({
-                  month: currentMonth(),
+                  month: m,
                   amount: Number(budgetAmount),
                   kind: budgetKind,
                   person_id: budgetPerson ? Number(budgetPerson) : null,
@@ -673,11 +699,11 @@ function Settings({ data, onRefresh, setError, setNotice }) {
           <h3>归属人</h3>
           <div className="form-row">
             <input className="field" value={personName} onChange={(e) => setPersonName(e.target.value)} placeholder="我 / 老婆" />
-            <button type="button" className="btn primary" onClick={async () => { await api.createPerson(personName); setPersonName(''); onRefresh() }}>添加</button>
+            <button type="button" className="btn primary" onClick={async () => { try { await api.createPerson(personName); setPersonName(''); setNotice('已添加'); onRefresh() } catch (e) { setError(e.message) } }}>添加</button>
           </div>
           <div className="chip-manage">
             {(data.people || []).map((p) => (
-              <span key={p.id} style={{ '--chip': p.color }}>{p.name}<button type="button" onClick={async () => { await api.deletePerson(p.id); onRefresh() }}>×</button></span>
+              <span key={p.id} style={{ '--chip': p.color }}>{p.name}<button type="button" onClick={async () => { if (!confirm('删除此人？其流水归属会清空。')) return; try { await api.deletePerson(p.id); onRefresh() } catch (e) { setError(e.message) } }}>×</button></span>
             ))}
           </div>
         </div>
@@ -685,7 +711,7 @@ function Settings({ data, onRefresh, setError, setNotice }) {
           <h3>标签</h3>
           <div className="form-row">
             <input className="field" value={tagName} onChange={(e) => setTagName(e.target.value)} placeholder="餐饮" />
-            <button type="button" className="btn primary" onClick={async () => { await api.createTag(tagName); setTagName(''); onRefresh() }}>添加</button>
+            <button type="button" className="btn primary" onClick={async () => { try { await api.createTag(tagName); setTagName(''); setNotice('已添加'); onRefresh() } catch (e) { setError(e.message) } }}>添加</button>
           </div>
           <div className="chip-manage">
             {(data.tags || []).map((t) => (
@@ -816,6 +842,7 @@ export default function App() {
   const [data, setData] = useState({
     analytics: null,
     transactions: [],
+    txnTotal: 0,
     people: [],
     tags: [],
     digest: null,
@@ -826,6 +853,7 @@ export default function App() {
     search: '',
     periodMonth: currentMonth(),
   })
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const analyticsQuery = useCallback(() => {
     const kind = period.kind || 'consume'
@@ -834,14 +862,15 @@ export default function App() {
     return { days: period.preset, kind }
   }, [period])
 
-  const loadAll = useCallback(async (search = data.search) => {
+  const loadAll = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
       const month = period.mode === 'month' ? (period.month || currentMonth()) : currentMonth()
+      const search = typeof data.search === 'string' ? data.search : ''
       const [analytics, txns, people, tags, digest, budgets, rules, goals, cards] = await Promise.all([
         api.analytics(analyticsQuery()),
-        api.transactions({ q: search, limit: 80 }),
+        api.transactions({ q: search, limit: 50, offset: 0 }),
         api.people(),
         api.tags(),
         api.digest().catch(() => null),
@@ -853,6 +882,7 @@ export default function App() {
       setData({
         analytics,
         transactions: txns.items || [],
+        txnTotal: txns.total || 0,
         people: people.items || [],
         tags: tags.items || [],
         digest,
@@ -917,7 +947,7 @@ export default function App() {
           onRefresh={loadAll}
           onNav={(path) => nav(path)}
           onMonth={(m) => {
-            setPeriod((p) => ({ ...p, mode: 'month', month: m }))
+            setPeriod((p) => ({ ...p, mode: 'month', month: clampMonth(m) }))
           }}
         />} />
         <Route
@@ -925,11 +955,35 @@ export default function App() {
           element={(
             <Transactions
               data={data}
-              onRefresh={loadAll}
+              total={data.txnTotal}
+              loadingMore={loadingMore}
+              onRefresh={() => loadAll()}
               onSearch={async (q) => {
-                setData((d) => ({ ...d, search: q }))
-                const res = await api.transactions({ q, limit: 80 })
-                setData((d) => ({ ...d, transactions: res.items || [], search: q }))
+                try {
+                  const res = await api.transactions({ q, limit: 50, offset: 0 })
+                  setData((d) => ({ ...d, transactions: res.items || [], txnTotal: res.total || 0, search: q }))
+                } catch (e) {
+                  setError(e.message || '搜索失败')
+                }
+              }}
+              onLoadMore={async () => {
+                setLoadingMore(true)
+                try {
+                  const res = await api.transactions({
+                    q: data.search || '',
+                    limit: 50,
+                    offset: data.transactions.length,
+                  })
+                  setData((d) => ({
+                    ...d,
+                    transactions: [...d.transactions, ...(res.items || [])],
+                    txnTotal: res.total || d.txnTotal,
+                  }))
+                } catch (e) {
+                  setError(e.message || '加载失败')
+                } finally {
+                  setLoadingMore(false)
+                }
               }}
             />
           )}
@@ -956,6 +1010,7 @@ export default function App() {
               onRefresh={loadAll}
               setError={setError}
               setNotice={setNotice}
+              budgetMonth={period.mode === 'month' ? (period.month || currentMonth()) : currentMonth()}
             />
           )}
         />

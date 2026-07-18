@@ -13,7 +13,6 @@ func TestLoginGuardGlobalLock(t *testing.T) {
 	g.maxGlobalFails = 3
 	g.globalLockFor = time.Minute
 	g.baseDelay = 0
-
 	for i := 0; i < 3; i++ {
 		ip := fmt.Sprintf("1.2.3.%d", i)
 		locked, _ := g.Fail(ip)
@@ -31,7 +30,7 @@ func TestLoginGuardGlobalLock(t *testing.T) {
 }
 
 func TestSessionCreateValid(t *testing.T) {
-	s := NewStore("secret-pass", time.Hour, false)
+	s := NewStore("secret-pass", time.Hour, false, nil)
 	rr := httptest.NewRecorder()
 	id, err := s.Create(rr)
 	if err != nil || id == "" {
@@ -44,10 +43,7 @@ func TestSessionCreateValid(t *testing.T) {
 	if !s.Valid(req) {
 		t.Fatal("session should be valid")
 	}
-	if !s.CheckPassword("secret-pass") {
-		t.Fatal("password check failed")
-	}
-	if s.CheckPassword("wrong") {
-		t.Fatal("wrong password accepted")
+	if !s.CheckPassword("secret-pass") || s.CheckPassword("wrong") {
+		t.Fatal("password check")
 	}
 }

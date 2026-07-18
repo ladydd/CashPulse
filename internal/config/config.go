@@ -59,8 +59,9 @@ func Load() (Config, error) {
 	if cfg.IngestToken == "" {
 		return Config{}, fmt.Errorf("INGEST_TOKEN or API_TOKEN is required (for SMS upload)")
 	}
-	if cfg.AdminToken == "" && cfg.AdminPassword == "" {
-		return Config{}, fmt.Errorf("ADMIN_PASSWORD or ADMIN_TOKEN or API_TOKEN is required (for admin access)")
+	// Web UI is password-session only. ADMIN_TOKEN remains optional for scripts.
+	if cfg.AdminPassword == "" {
+		return Config{}, fmt.Errorf("ADMIN_PASSWORD is required (web login)")
 	}
 	if cfg.SessionSecret == "" {
 		// Derive a process-local secret if not provided (sessions reset on restart).

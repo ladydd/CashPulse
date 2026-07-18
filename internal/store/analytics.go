@@ -106,6 +106,7 @@ type Analytics struct {
 	BalanceHealth   BalanceHealth        `json:"balance_health"`
 	LatestBalance   float64              `json:"latest_balance,omitempty"`
 	LatestBalanceAt *time.Time           `json:"latest_balance_at,omitempty"`
+	LatestCardLast4 string              `json:"latest_card_last4,omitempty"`
 	BalanceKnown    bool                 `json:"balance_known"`
 	TotalTxnCount   int                  `json:"total_txn_count"`
 	UnparsedCount   int                  `json:"unparsed_count"`
@@ -255,12 +256,13 @@ func (s *Store) Analytics(ctx context.Context, q AnalyticsQuery) (*Analytics, er
 	}
 	out.BalanceHealth = s.computeBalanceHealth(balSeries, consumeTot.AvgDailyExpense, 100)
 
-	if bal, at, ok, err := s.LatestBalance(ctx); err != nil {
+	if bal, at, card, ok, err := s.LatestBalanceDetail(ctx); err != nil {
 		return nil, err
 	} else if ok {
 		out.BalanceKnown = true
 		out.LatestBalance = bal
 		out.LatestBalanceAt = &at
+		out.LatestCardLast4 = card
 	}
 
 	if n, err := s.CountTransactions(ctx); err != nil {
@@ -297,9 +299,17 @@ func resolveAnalyticsWindow(q AnalyticsQuery, todayStart time.Time, s *Store) (f
 		if toDay.Before(from) {
 			from, toDay = toDay, from
 		}
-		// clamp future
+		// clamp future: both ends cannot be after today
 		if toDay.After(todayStart) {
 			toDay = todayStart
+		}
+		if from.After(todayStart) {
+			// entirely future month → empty but valid single-day window at today
+			from = todayStart
+			toDay = todayStart
+		}
+		if from.After(toDay) {
+			from = toDay
 		}
 		return from, toDay, nil
 	}

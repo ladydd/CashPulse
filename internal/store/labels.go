@@ -479,6 +479,41 @@ type MerchantBucket struct {
 }
 
 // BulkUpdatePerson sets person_id for all rows matching filter. Returns affected count.
+// CountTransactionsFiltered counts rows matching filter (ignores limit/offset).
+func (s *Store) CountTransactionsFiltered(ctx context.Context, f TxnFilter) (int, error) {
+	var where []string
+	var args []any
+	if q := strings.TrimSpace(f.Q); q != "" {
+		like := "%" + q + "%"
+		where = append(where, `(t.merchant LIKE ? OR t.note LIKE ? OR t.bank LIKE ? OR t.category LIKE ? OR p.name LIKE ?)`)
+		args = append(args, like, like, like, like, like)
+	}
+	if f.Unlabeled {
+		where = append(where, `t.person_id IS NULL`)
+	}
+	if f.PersonID != nil {
+		where = append(where, `t.person_id = ?`)
+		args = append(args, *f.PersonID)
+	}
+	if f.From != nil {
+		where = append(where, `t.occurred_at >= ?`)
+		args = append(args, f.From.UTC().Format(time.RFC3339Nano))
+	}
+	if f.ToExclusive != nil {
+		where = append(where, `t.occurred_at < ?`)
+		args = append(args, f.ToExclusive.UTC().Format(time.RFC3339Nano))
+	}
+	clause := ""
+	if len(where) > 0 {
+		clause = "WHERE " + strings.Join(where, " AND ")
+	}
+	q := `SELECT COUNT(*) FROM transactions t LEFT JOIN people p ON p.id = t.person_id ` + clause
+	var n int
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&n)
+	return n, err
+}
+
+
 func (s *Store) BulkUpdatePerson(ctx context.Context, personID *int64, f BulkLabelFilter) (int64, error) {
 	if personID != nil {
 		var n int

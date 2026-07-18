@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"cashpulse/internal/classify"
@@ -139,6 +142,16 @@ CREATE INDEX IF NOT EXISTS idx_raw_sms_status ON raw_sms(status);
 	if err := s.migrateFeatures(); err != nil {
 		return fmt.Errorf("migrate features: %w", err)
 	}
+	
+	// SMS idempotency fingerprint (exact body hash).
+	if !s.columnExists("raw_sms", "fingerprint") {
+		if _, err := s.db.Exec(`ALTER TABLE raw_sms ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate fingerprint: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_sms_fingerprint ON raw_sms(fingerprint) WHERE fingerprint != ''`); err != nil {
+		return fmt.Errorf("migrate fingerprint index: %w", err)
+	}
 	if err := s.backfillKindAndNorm(); err != nil {
 		return fmt.Errorf("backfill kind: %w", err)
 	}
@@ -167,17 +180,71 @@ func (s *Store) columnExists(table, col string) bool {
 }
 
 // InsertRawSMS stores the original SMS body and returns its id.
-func (s *Store) InsertRawSMS(ctx context.Context, text, source string) (int64, error) {
+// SMSFingerprint is a stable hash of normalized SMS body for idempotency.
+func SMSFingerprint(text string) string {
+	norm := strings.TrimSpace(text)
+	norm = strings.ReplaceAll(norm, "\r\n", "\n")
+	norm = strings.ReplaceAll(norm, "\r", "\n")
+	sum := sha256.Sum256([]byte(norm))
+	return hex.EncodeToString(sum[:])
+}
+
+// InsertRawSMSResult is the outcome of inserting (or finding) a raw SMS row.
+type InsertRawSMSResult struct {
+	ID        int64
+	Duplicate bool
+	Status    model.ParseStatus
+	Error     string
+}
+
+// InsertRawSMS stores a raw SMS. Identical fingerprint returns the existing row as Duplicate.
+func (s *Store) InsertRawSMS(ctx context.Context, text, source string) (InsertRawSMSResult, error) {
+	fp := SMSFingerprint(text)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO raw_sms (text, source, status, created_at) VALUES (?, ?, ?, ?)`,
-		text, source, model.ParseStatusPending, now,
+		`INSERT INTO raw_sms (text, source, status, created_at, fingerprint) VALUES (?, ?, ?, ?, ?)`,
+		text, source, model.ParseStatusPending, now, fp,
 	)
 	if err != nil {
-		return 0, err
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			var out InsertRawSMSResult
+			var status, errMsg string
+			qerr := s.db.QueryRowContext(ctx, `
+SELECT id, status, error FROM raw_sms WHERE fingerprint = ?`, fp).Scan(&out.ID, &status, &errMsg)
+			if qerr != nil {
+				return InsertRawSMSResult{}, err
+			}
+			out.Duplicate = true
+			out.Status = model.ParseStatus(status)
+			out.Error = errMsg
+			return out, nil
+		}
+		return InsertRawSMSResult{}, err
 	}
-	return res.LastInsertId()
+	id, _ := res.LastInsertId()
+	return InsertRawSMSResult{ID: id, Status: model.ParseStatusPending}, nil
 }
+
+// TransactionByRawSMSID returns the transaction linked to a raw SMS, if any.
+func (s *Store) TransactionByRawSMSID(ctx context.Context, rawID int64) (*model.Transaction, error) {
+	row := s.db.QueryRowContext(ctx, txnSelect+` WHERE t.raw_sms_id = ?`, rawID)
+	txn, err := scanTxn(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	list, err := s.EnrichTransactions(ctx, []model.Transaction{txn})
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return &txn, nil
+	}
+	return &list[0], nil
+}
+
 
 // MarkRawSMS updates parse status for a raw SMS row.
 func (s *Store) MarkRawSMS(ctx context.Context, id int64, status model.ParseStatus, errMsg string) error {
@@ -308,28 +375,34 @@ LIMIT ?`, model.ParseStatusOK, model.ParseStatusIgnored, limit)
 
 // LatestBalance returns the most recent known balance.
 func (s *Store) LatestBalance(ctx context.Context) (balance float64, at time.Time, ok bool, err error) {
+	balance, at, _, ok, err = s.LatestBalanceDetail(ctx)
+	return
+}
+
+// LatestBalanceDetail returns latest SMS balance plus card last4 for UI labeling.
+func (s *Store) LatestBalanceDetail(ctx context.Context) (balance float64, at time.Time, cardLast4 string, ok bool, err error) {
 	var bal sql.NullFloat64
-	var occurred string
+	var occurred, card string
 	err = s.db.QueryRowContext(ctx, `
-SELECT balance_after, occurred_at
+SELECT balance_after, occurred_at, COALESCE(card_last4,'')
 FROM transactions
 WHERE balance_known = 1 AND balance_after IS NOT NULL
 ORDER BY occurred_at DESC, id DESC
-LIMIT 1`).Scan(&bal, &occurred)
+LIMIT 1`).Scan(&bal, &occurred, &card)
 	if err == sql.ErrNoRows {
-		return 0, time.Time{}, false, nil
+		return 0, time.Time{}, "", false, nil
 	}
 	if err != nil {
-		return 0, time.Time{}, false, err
+		return 0, time.Time{}, "", false, err
 	}
 	if !bal.Valid {
-		return 0, time.Time{}, false, nil
+		return 0, time.Time{}, "", false, nil
 	}
 	at, _ = time.Parse(time.RFC3339Nano, occurred)
 	if at.IsZero() {
 		at, _ = time.Parse(time.RFC3339, occurred)
 	}
-	return bal.Float64, at, true, nil
+	return bal.Float64, at, card, true, nil
 }
 
 // DailySummaries aggregates expense/income for the last nDays (including today), local dates.

@@ -41,7 +41,7 @@ func main() {
 	p := parser.New(loc)
 	svc := service.New(st, p, loc)
 
-	sess := auth.NewStore(cfg.AdminPassword, cfg.SessionTTL, cfg.SecureCookie)
+	sess := auth.NewStore(cfg.AdminPassword, cfg.SessionTTL, cfg.SecureCookie, st)
 	a := &api.Auth{
 		IngestToken: cfg.IngestToken,
 		AdminToken:  cfg.AdminToken,

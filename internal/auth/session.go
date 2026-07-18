@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -13,21 +14,30 @@ import (
 
 const CookieName = "cashpulse_session"
 
-// Store is an in-memory session store (single process / single user).
+// SessionBackend persists sessions (e.g. SQLite).
+type SessionBackend interface {
+	SaveSession(ctx context.Context, id string, expiresAt time.Time) error
+	GetSessionExpiry(ctx context.Context, id string) (time.Time, bool, error)
+	DeleteSession(ctx context.Context, id string) error
+}
+
+// Store is session + password + brute-force guard for admin web login.
 type Store struct {
 	mu       sync.Mutex
-	byID     map[string]time.Time // id -> expiry
+	mem      map[string]time.Time // fallback if backend nil
+	backend  SessionBackend
 	ttl      time.Duration
 	secure   bool
 	password string
 }
 
-func NewStore(password string, ttl time.Duration, secure bool) *Store {
+func NewStore(password string, ttl time.Duration, secure bool, backend SessionBackend) *Store {
 	if ttl <= 0 {
 		ttl = 30 * 24 * time.Hour
 	}
 	return &Store{
-		byID:     make(map[string]time.Time),
+		mem:      make(map[string]time.Time),
+		backend:  backend,
 		ttl:      ttl,
 		secure:   secure,
 		password: password,
@@ -40,11 +50,8 @@ func (s *Store) CheckPassword(pw string) bool {
 	if s.password == "" {
 		return false
 	}
-	// Constant-time compare; pad lengths carefully via subtle on equal-length slices.
-	a := []byte(pw)
-	b := []byte(s.password)
+	a, b := []byte(pw), []byte(s.password)
 	if len(a) != len(b) {
-		// still do a dummy compare to reduce timing leak on length
 		subtle.ConstantTimeCompare(b, b)
 		return false
 	}
@@ -58,38 +65,33 @@ func (s *Store) Create(w http.ResponseWriter) (string, error) {
 	}
 	id := hex.EncodeToString(b)
 	exp := time.Now().Add(s.ttl)
-	s.mu.Lock()
-	s.byID[id] = exp
-	s.mu.Unlock()
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    id,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   s.secure,
-		Expires:  exp,
-		MaxAge:   int(s.ttl.Seconds()),
-	})
+	if s.backend != nil {
+		if err := s.backend.SaveSession(context.Background(), id, exp); err != nil {
+			return "", err
+		}
+	} else {
+		s.mu.Lock()
+		s.mem[id] = exp
+		s.mu.Unlock()
+	}
+	s.writeCookie(w, id, exp)
 	return id, nil
 }
 
 func (s *Store) Destroy(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(CookieName); err == nil {
-		s.mu.Lock()
-		delete(s.byID, c.Value)
-		s.mu.Unlock()
+	if c, err := r.Cookie(CookieName); err == nil && c.Value != "" {
+		if s.backend != nil {
+			_ = s.backend.DeleteSession(context.Background(), c.Value)
+		} else {
+			s.mu.Lock()
+			delete(s.mem, c.Value)
+			s.mu.Unlock()
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   s.secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-		Expires:  time.Unix(0, 0),
+		Name: CookieName, Value: "", Path: "/", HttpOnly: true,
+		Secure: s.secure, SameSite: http.SameSiteLaxMode,
+		MaxAge: -1, Expires: time.Unix(0, 0),
 	})
 }
 
@@ -98,66 +100,68 @@ func (s *Store) Valid(r *http.Request) bool {
 	if err != nil || c.Value == "" {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	exp, ok := s.byID[c.Value]
-	if !ok {
-		return false
+	id := c.Value
+	var exp time.Time
+	var ok bool
+	if s.backend != nil {
+		exp, ok, err = s.backend.GetSessionExpiry(context.Background(), id)
+		if err != nil || !ok {
+			return false
+		}
+	} else {
+		s.mu.Lock()
+		exp, ok = s.mem[id]
+		if !ok || time.Now().After(exp) {
+			if ok {
+				delete(s.mem, id)
+			}
+			s.mu.Unlock()
+			return false
+		}
+		s.mu.Unlock()
 	}
-	if time.Now().After(exp) {
-		delete(s.byID, c.Value)
-		return false
+	// sliding expiry
+	newExp := time.Now().Add(s.ttl)
+	if s.backend != nil {
+		_ = s.backend.SaveSession(context.Background(), id, newExp)
+	} else {
+		s.mu.Lock()
+		s.mem[id] = newExp
+		s.mu.Unlock()
 	}
-	// sliding expiration — keep you logged in while occasionally visiting
-	s.byID[c.Value] = time.Now().Add(s.ttl)
 	return true
 }
 
-// RefreshCookie rewrites the session cookie MaxAge so browsers keep it.
 func (s *Store) RefreshCookie(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie(CookieName)
 	if err != nil || c.Value == "" {
 		return
 	}
-	s.mu.Lock()
-	exp, ok := s.byID[c.Value]
-	s.mu.Unlock()
-	if !ok {
-		return
-	}
+	// Valid already slides backend; just re-emit cookie
+	exp := time.Now().Add(s.ttl)
+	s.writeCookie(w, c.Value, exp)
+}
+
+func (s *Store) writeCookie(w http.ResponseWriter, id string, exp time.Time) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    c.Value,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   s.secure,
-		Expires:  exp,
-		MaxAge:   int(s.ttl.Seconds()),
+		Name: CookieName, Value: id, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Secure: s.secure,
+		Expires: exp, MaxAge: int(s.ttl.Seconds()),
 	})
 }
 
-// ---- Brute-force guard (works even if attacker rotates IPs) ----
+// ---- LoginGuard (global + per-IP) ----
 
-// LoginGuard rate-limits password attempts.
-// - Global lockout after N failures (IP rotation cannot bypass)
-// - Per-IP soft limit
-// - Progressive delay on every attempt
 type LoginGuard struct {
-	mu sync.Mutex
-
-	// global password failures for the single admin account
-	globalFails   int
+	mu              sync.Mutex
+	globalFails     int
 	globalLockUntil time.Time
-
-	// per-IP attempts
-	ipFails map[string]*ipBucket
-
-	maxGlobalFails int
-	globalLockFor  time.Duration
-	maxIPFails     int
-	ipWindow       time.Duration
-	baseDelay      time.Duration
+	ipFails         map[string]*ipBucket
+	maxGlobalFails  int
+	globalLockFor   time.Duration
+	maxIPFails      int
+	ipWindow        time.Duration
+	baseDelay       time.Duration
 }
 
 type ipBucket struct {
@@ -168,26 +172,24 @@ type ipBucket struct {
 func NewLoginGuard() *LoginGuard {
 	return &LoginGuard{
 		ipFails:        make(map[string]*ipBucket),
-		maxGlobalFails: 8,                // after 8 wrong passwords...
-		globalLockFor:  30 * time.Minute, // lock whole login for 30 min
-		maxIPFails:     20,               // per IP soft cap
+		maxGlobalFails: 8,
+		globalLockFor:  30 * time.Minute,
+		maxIPFails:     20,
 		ipWindow:       time.Hour,
 		baseDelay:      400 * time.Millisecond,
 	}
 }
 
-// Allow reports whether a login attempt may proceed. If not, returns retry-after duration.
-func (g *LoginGuard) Allow(ip string) (ok bool, retryAfter time.Duration) {
+func (g *LoginGuard) Allow(ip string) (bool, time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.cleanupLocked()
-
 	now := time.Now()
 	if now.Before(g.globalLockUntil) {
 		return false, g.globalLockUntil.Sub(now)
 	}
 	ip = normalizeIP(ip)
-	if b, exists := g.ipFails[ip]; exists {
+	if b, ok := g.ipFails[ip]; ok {
 		if now.Sub(b.window0) < g.ipWindow && b.fails >= g.maxIPFails {
 			return false, g.ipWindow - now.Sub(b.window0)
 		}
@@ -195,35 +197,30 @@ func (g *LoginGuard) Allow(ip string) (ok bool, retryAfter time.Duration) {
 	return true, 0
 }
 
-// Fail records a failed login (wrong password).
-func (g *LoginGuard) Fail(ip string) (locked bool, retryAfter time.Duration) {
+func (g *LoginGuard) Fail(ip string) (bool, time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
 	ip = normalizeIP(ip)
-
 	b := g.ipFails[ip]
 	if b == nil || now.Sub(b.window0) >= g.ipWindow {
 		b = &ipBucket{window0: now}
 		g.ipFails[ip] = b
 	}
 	b.fails++
-
 	g.globalFails++
 	if g.globalFails >= g.maxGlobalFails {
 		g.globalLockUntil = now.Add(g.globalLockFor)
 		g.globalFails = 0
 		return true, g.globalLockFor
 	}
-	// progressive delay hint for client messaging
-	delay := time.Duration(b.fails) * g.baseDelay
-	if delay > 5*time.Second {
-		delay = 5 * time.Second
+	d := time.Duration(b.fails) * g.baseDelay
+	if d > 5*time.Second {
+		d = 5 * time.Second
 	}
-	return false, delay
+	return false, d
 }
 
-// Success clears counters after a good password.
 func (g *LoginGuard) Success(ip string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -232,17 +229,14 @@ func (g *LoginGuard) Success(ip string) {
 	delete(g.ipFails, normalizeIP(ip))
 }
 
-// Delay sleeps a minimum time to slow brute force (call on every attempt).
 func (g *LoginGuard) Delay(ip string) {
 	g.mu.Lock()
 	fails := 0
 	if b := g.ipFails[normalizeIP(ip)]; b != nil {
 		fails = b.fails
 	}
-	// also scale with global fails
 	gf := g.globalFails
 	g.mu.Unlock()
-
 	d := g.baseDelay + time.Duration(fails+gf)*150*time.Millisecond
 	if d > 3*time.Second {
 		d = 3 * time.Second
@@ -264,7 +258,6 @@ func normalizeIP(ip string) string {
 	if ip == "" {
 		return "unknown"
 	}
-	// X-Forwarded-For may be "client, proxy"
 	if i := strings.IndexByte(ip, ','); i >= 0 {
 		ip = strings.TrimSpace(ip[:i])
 	}
@@ -275,7 +268,6 @@ func normalizeIP(ip string) string {
 	return ip
 }
 
-// ClientIP extracts best-effort client IP behind Caddy.
 func ClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		return normalizeIP(xff)

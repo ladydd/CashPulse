@@ -16,8 +16,8 @@ func (h *Handler) ExportTransactionsCSV(w http.ResponseWriter, r *http.Request) 
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
 	if from == "" || to == "" {
-		// default last 30 days
-		end := time.Now()
+		// default last 30 days in app timezone
+		end := time.Now().In(h.svc.Location())
 		start := end.AddDate(0, 0, -29)
 		from = start.Format("2006-01-02")
 		to = end.Format("2006-01-02")
@@ -47,7 +47,7 @@ func (h *Handler) ExportTransactionsCSV(w http.ResponseWriter, r *http.Request) 
 		}
 		_ = cw.Write([]string{
 			strconv.FormatInt(t.ID, 10),
-			t.OccurredAt.In(time.Local).Format("2006-01-02 15:04:05"),
+			t.OccurredAt.In(h.svc.Location()).Format("2006-01-02 15:04:05"),
 			string(t.Direction),
 			string(t.Kind),
 			fmt.Sprintf("%.2f", t.Amount),

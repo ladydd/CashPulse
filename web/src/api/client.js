@@ -53,8 +53,8 @@ export const api = {
     p.set('kind', opts.kind || 'consume')
     return request(`/api/v1/analytics?${p}`)
   },
-  transactions: ({ q = '', limit = 80, unlabeled = false, from = '', to = '' } = {}) => {
-    const p = new URLSearchParams({ limit: String(limit) })
+  transactions: ({ q = '', limit = 80, offset = 0, unlabeled = false, from = '', to = '' } = {}) => {
+    const p = new URLSearchParams({ limit: String(limit), offset: String(offset) })
     if (q) p.set('q', q)
     if (unlabeled) p.set('unlabeled', '1')
     if (from) p.set('from', from)

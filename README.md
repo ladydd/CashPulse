@@ -11,7 +11,7 @@
 - **分析**：按月（主）/ 7·15·30·90 天 / 全部；消费与转账拆分；谁花了多少
 - **整理**：按日打归属人与标签；支持自动打标规则
 - 预算、存钱目标、CSV 导出、银行卡汇总
-- 鉴权：管理员密码 Session 或 Admin Token；上报 Token 可与管理分离
+- 鉴权：网页 **仅管理员密码**（Session 持久化到 SQLite，约 30 天）；短信上报用独立 `INGEST_TOKEN`；`ADMIN_TOKEN` 仅可选给脚本
 - 响应式 Web（React）：桌面侧栏 + 移动底栏
 
 ## 技术栈
@@ -56,8 +56,9 @@ go run ./cmd/import -file tmp/xxx.csv -db ./data/cashpulse.db -reset
 | 变量 | 含义 |
 |------|------|
 | `INGEST_TOKEN` | 仅短信上报 |
-| `ADMIN_PASSWORD` | 浏览器登录 |
-| `ADMIN_TOKEN` / `API_TOKEN` | 管理 Bearer（兼容） |
+| `ADMIN_PASSWORD` | **必填**，浏览器登录 |
+| `INGEST_TOKEN` | 短信上报专用 |
+| `ADMIN_TOKEN` | 可选，脚本调管理 API |
 | `DATABASE_PATH` | SQLite 路径 |
 | `SECURE_COOKIE` | HTTPS 下设 `true` |
 

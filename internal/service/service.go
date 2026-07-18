@@ -17,6 +17,13 @@ type Service struct {
 	loc    *time.Location
 }
 
+func (s *Service) Location() *time.Location {
+	if s.loc == nil {
+		return time.Local
+	}
+	return s.loc
+}
+
 func New(st *store.Store, p *parser.Parser, loc *time.Location) *Service {
 	if loc == nil {
 		loc = time.Local
@@ -34,6 +41,7 @@ type IngestSMSRequest struct {
 type IngestSMSResponse struct {
 	RawSMSID     int64              `json:"raw_sms_id"`
 	Status       model.ParseStatus  `json:"status"`
+	Duplicate    bool               `json:"duplicate,omitempty"`
 	Transaction  *model.Transaction `json:"transaction,omitempty"`
 	ParseError   string             `json:"parse_error,omitempty"`
 	MatchedRule  string             `json:"matched_rule,omitempty"`
@@ -52,12 +60,39 @@ func (s *Service) IngestSMS(ctx context.Context, req IngestSMSRequest) (*IngestS
 		source = "shortcut"
 	}
 
-	id, err := s.store.InsertRawSMS(ctx, text, source)
+	ins, err := s.store.InsertRawSMS(ctx, text, source)
 	if err != nil {
 		return nil, fmt.Errorf("save raw sms: %w", err)
 	}
-
+	id := ins.ID
 	resp := &IngestSMSResponse{RawSMSID: id}
+
+	// Exact same SMS body already processed → return existing result (idempotent).
+	if ins.Duplicate {
+		resp.Duplicate = true
+		resp.Status = ins.Status
+		if ins.Status == model.ParseStatusFailed {
+			resp.ParseError = ins.Error
+		}
+		if ins.Status == model.ParseStatusIgnored {
+			resp.Ignored = true
+			resp.IgnoreReason = ins.Error
+		}
+		if txn, err := s.store.TransactionByRawSMSID(ctx, id); err == nil && txn != nil {
+			resp.Transaction = txn
+			if resp.Status == "" || resp.Status == model.ParseStatusPending {
+				resp.Status = model.ParseStatusOK
+			}
+		}
+		if resp.Status == "" || resp.Status == model.ParseStatusPending {
+			// orphan pending row: re-parse path below would double-work; treat as ok empty
+			resp.Status = ins.Status
+			if resp.Status == model.ParseStatusPending {
+				resp.Status = model.ParseStatusOK
+			}
+		}
+		return resp, nil
+	}
 
 	result, parseErr := s.parser.Parse(text, time.Now())
 	if parseErr != nil {
@@ -114,7 +149,7 @@ func (s *Service) IngestSMS(ctx context.Context, req IngestSMSRequest) (*IngestS
 
 // ListTransactions returns paginated transactions with optional filters.
 // from/to are local calendar dates YYYY-MM-DD; to is inclusive.
-func (s *Service) ListTransactions(ctx context.Context, q string, limit, offset int, unlabeled bool, personID *int64, fromDate, toDate string) ([]model.Transaction, error) {
+func (s *Service) ListTransactions(ctx context.Context, q string, limit, offset int, unlabeled bool, personID *int64, fromDate, toDate string) ([]model.Transaction, int, error) {
 	f := store.TxnFilter{
 		Q:         q,
 		Limit:     limit,
@@ -123,17 +158,29 @@ func (s *Service) ListTransactions(ctx context.Context, q string, limit, offset 
 		PersonID:  personID,
 	}
 	if fromDate != "" {
-		if t, err := time.ParseInLocation("2006-01-02", fromDate, s.loc); err == nil {
-			f.From = &t
+		t, err := time.ParseInLocation("2006-01-02", fromDate, s.loc)
+		if err != nil {
+			return nil, 0, fmt.Errorf("invalid from date")
 		}
+		f.From = &t
 	}
 	if toDate != "" {
-		if t, err := time.ParseInLocation("2006-01-02", toDate, s.loc); err == nil {
-			end := t.AddDate(0, 0, 1)
-			f.ToExclusive = &end
+		t, err := time.ParseInLocation("2006-01-02", toDate, s.loc)
+		if err != nil {
+			return nil, 0, fmt.Errorf("invalid to date")
 		}
+		end := t.AddDate(0, 0, 1)
+		f.ToExclusive = &end
 	}
-	return s.store.ListTransactionsFiltered(ctx, f)
+	items, err := s.store.ListTransactionsFiltered(ctx, f)
+	if err != nil {
+		return nil, 0, err
+	}
+	total, err := s.store.CountTransactionsFiltered(ctx, f)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
 }
 
 // Dashboard builds the home page payload.
