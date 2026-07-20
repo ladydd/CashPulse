@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { api, clearToken, getToken } from './api/client'
+import BalanceScratch from './components/BalanceScratch.jsx'
 import { currentMonth, greeting, money, monthLabel, shiftMonth, ymd, fmtTime } from './lib/format'
 import './styles.css'
 
@@ -233,7 +234,11 @@ function Home({ data, onRefresh, onNav, onMonth }) {
         <article className="balance-hero">
           <div className="hero-glow" />
           <div className="balance-top"><span>最近余额</span><span className="live-dot">已同步</span></div>
-          <div className="balance-value">{a.balance_known ? money(a.latest_balance) : '暂无余额'}</div>
+          <BalanceScratch
+            known={Boolean(a.balance_known)}
+            value={money(a.latest_balance)}
+            emptyText="暂无余额"
+          />
           <div className="balance-time">{a.latest_balance_at ? `更新于 ${fmtTime(a.latest_balance_at)}${a.latest_card_last4 ? ` · 尾号${a.latest_card_last4}` : ''}` : '等待短信中的余额'}</div>
           <div className="balance-stats">
             <div><span>本月收入</span><strong>+{money(range.income)}</strong></div>
