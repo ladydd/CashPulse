@@ -215,6 +215,60 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+
+// Bootstrap returns aggregated home/shell data in one response.
+// Query: same as analytics (month|from&to|days) + kind + month for budgets.
+func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	month := r.URL.Query().Get("month")
+	if month != "" && from == "" && to == "" {
+		if t, err := time.Parse("2006-01", month); err == nil {
+			from = t.Format("2006-01-02")
+			to = t.AddDate(0, 1, -1).Format("2006-01-02")
+		}
+	}
+	days := 0
+	if from == "" && to == "" && month == "" {
+		q := r.URL.Query().Get("days")
+		days = 30
+		if q == "all" || q == "0" {
+			days = 0
+		} else if q != "" {
+			if n, err := strconv.Atoi(q); err == nil {
+				days = n
+			}
+		}
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = "consume"
+	}
+	if month == "" {
+		// budget month defaults to calendar month of "to" or today
+		month = time.Now().Format("2006-01")
+		if to != "" {
+			if t, err := time.Parse("2006-01-02", to); err == nil {
+				month = t.Format("2006-01")
+			}
+		}
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 50
+	}
+	out, err := h.svc.Bootstrap(r.Context(), days, from, to, kind, month, limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (h *Handler) ListPeople(w http.ResponseWriter, r *http.Request) {
 	items, err := h.svc.ListPeople(r.Context())
 	if err != nil {

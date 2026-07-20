@@ -25,6 +25,82 @@ func (s *Service) Location() *time.Location {
 	return s.loc
 }
 
+
+// Bootstrap is a single payload for the web shell first paint / period change.
+type Bootstrap struct {
+	Analytics    *store.Analytics      `json:"analytics"`
+	Digest       *store.Digest         `json:"digest"`
+	Transactions []model.Transaction   `json:"transactions"`
+	TxnTotal     int                   `json:"txn_total"`
+	People       []model.Person        `json:"people"`
+	Tags         []model.Tag           `json:"tags"`
+	Budgets      []store.Budget        `json:"budgets"`
+	Month        string                `json:"month"`
+}
+
+// Bootstrap loads the data needed by Home + shell counters in one server round.
+// Settings-only data (rules/goals/cards) is loaded by dedicated endpoints.
+func (s *Service) Bootstrap(ctx context.Context, days int, from, to, kind, month string, txnLimit int) (*Bootstrap, error) {
+	if kind == "" {
+		kind = "consume"
+	}
+	if txnLimit <= 0 {
+		txnLimit = 50
+	}
+	if month == "" {
+		month = time.Now().In(s.loc).Format("2006-01")
+	}
+
+	// Prefer month analytics for home; analysis page can still call /analytics with other windows.
+	analytics, err := s.Analytics(ctx, days, from, to, kind)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := s.Digest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	txns, total, err := s.ListTransactions(ctx, "", txnLimit, 0, false, nil, "", "")
+	if err != nil {
+		return nil, err
+	}
+	people, err := s.ListPeople(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tags, err := s.ListTags(ctx)
+	if err != nil {
+		return nil, err
+	}
+	budgets, err := s.ListBudgets(ctx, month)
+	if err != nil {
+		return nil, err
+	}
+	if txns == nil {
+		txns = []model.Transaction{}
+	}
+	if people == nil {
+		people = []model.Person{}
+	}
+	if tags == nil {
+		tags = []model.Tag{}
+	}
+	if budgets == nil {
+		budgets = []store.Budget{}
+	}
+	return &Bootstrap{
+		Analytics:    analytics,
+		Digest:       digest,
+		Transactions: txns,
+		TxnTotal:     total,
+		People:       people,
+		Tags:         tags,
+		Budgets:      budgets,
+		Month:        month,
+	}, nil
+}
+
+
 func New(st *store.Store, p *parser.Parser, loc *time.Location) *Service {
 	if loc == nil {
 		loc = time.Local

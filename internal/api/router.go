@@ -29,6 +29,7 @@ func NewRouter(h *Handler, staticFS fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/v1/labels/unlabeled-merchants", admin(h.UnlabeledMerchants))
 	mux.HandleFunc("GET /api/v1/dashboard", admin(h.Dashboard))
 	mux.HandleFunc("GET /api/v1/analytics", admin(h.Analytics))
+	mux.HandleFunc("GET /api/v1/bootstrap", admin(h.Bootstrap))
 	mux.HandleFunc("GET /api/v1/unparsed", admin(h.ListUnparsed))
 	mux.HandleFunc("GET /api/v1/people", admin(h.ListPeople))
 	mux.HandleFunc("POST /api/v1/people", admin(h.CreatePerson))

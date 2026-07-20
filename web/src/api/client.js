@@ -42,6 +42,20 @@ export const api = {
   me: () => request('/api/v1/auth/me'),
   login: (password) => request('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
   logout: () => request('/api/v1/auth/logout', { method: 'POST' }),
+  bootstrap: (opts = {}) => {
+    const p = new URLSearchParams()
+    if (opts.from && opts.to) {
+      p.set('from', opts.from)
+      p.set('to', opts.to)
+    } else if (opts.month) p.set('month', opts.month)
+    else if (opts.days === 0 || opts.days === 'all') p.set('days', 'all')
+    else if (opts.days != null) p.set('days', String(opts.days))
+    else p.set('days', '30')
+    p.set('kind', opts.kind || 'consume')
+    if (opts.month) p.set('month', opts.month)
+    if (opts.limit) p.set('limit', String(opts.limit))
+    return request(`/api/v1/bootstrap?${p}`)
+  },
   analytics: (opts = {}) => {
     const p = new URLSearchParams()
     if (opts.from && opts.to) {

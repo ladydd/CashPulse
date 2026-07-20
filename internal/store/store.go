@@ -135,6 +135,16 @@ CREATE INDEX IF NOT EXISTS idx_raw_sms_status ON raw_sms(status);
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_txn_merchant_norm ON transactions(merchant_norm)`); err != nil {
 		return fmt.Errorf("migrate merchant_norm index: %w", err)
 	}
+	// composite indexes for analytics filters
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_txn_kind_occurred ON transactions(kind, occurred_at)`); err != nil {
+		return fmt.Errorf("migrate kind_occurred index: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_txn_dir_occurred ON transactions(direction, occurred_at)`); err != nil {
+		return fmt.Errorf("migrate dir_occurred index: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_txn_person_occurred ON transactions(person_id, occurred_at)`); err != nil {
+		return fmt.Errorf("migrate person_occurred index: %w", err)
+	}
 
 	if err := s.seedLabels(); err != nil {
 		return fmt.Errorf("seed labels: %w", err)

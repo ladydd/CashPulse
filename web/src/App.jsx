@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { api, clearToken, getToken } from './api/client'
 import { currentMonth, greeting, money, monthLabel, shiftMonth, ymd, fmtTime } from './lib/format'
+import './styles.css'
 
 function clampMonth(ym) {
   const cur = currentMonth()
@@ -13,8 +14,15 @@ function canGoNextMonth(ym) {
   return (ym || currentMonth()) < currentMonth()
 }
 
-import { ChartsDaily, ChartsDonut, ChartsHBar, ChartsMonthly, ChartsBalance } from './components/Charts.jsx'
-import './styles.css'
+const ChartsDaily = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsDaily })))
+const ChartsDonut = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsDonut })))
+const ChartsHBar = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsHBar })))
+const ChartsMonthly = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsMonthly })))
+const ChartsBalance = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsBalance })))
+
+function LazyChart({ children }) {
+  return <Suspense fallback={<div className="empty-chart">图表加载中…</div>}>{children}</Suspense>
+}
 
 function useAuth() {
   const [authed, setAuthed] = useState(false)
@@ -243,7 +251,7 @@ function Home({ data, onRefresh, onNav, onMonth }) {
             <div><span className="eyebrow">SPENDING</span><h3>本月消费节奏（按金额）</h3></div>
             <button type="button" className="text-btn" onClick={() => onNav('/analysis')}>分析 →</button>
           </div>
-          <ChartsDaily daily={a.daily || []} />
+          <LazyChart><ChartsDaily daily={a.daily || []} /></LazyChart>
         </article>
         <article className="card focus-card">
           <span className="eyebrow">NOTE</span>
@@ -412,19 +420,19 @@ function Analysis({ data, period, setPeriod, onRefresh }) {
       <section className="analysis-grid">
         <article className="card wide">
           <div className="card-head"><div><span className="eyebrow">TREND</span><h3>每日支出（柱高 = 花的钱）</h3></div><span className="hint">{a.from} — {a.to}</span></div>
-          <ChartsDaily daily={a.daily || []} height={300} />
+          <LazyChart><ChartsDaily daily={a.daily || []} height={300} /></LazyChart>
         </article>
         <article className="card">
           <div className="card-head"><div><span className="eyebrow">MIX</span><h3>渠道构成</h3></div></div>
-          <ChartsDonut rows={a.by_channel || []} />
+          <LazyChart><ChartsDonut rows={a.by_channel || []} /></LazyChart>
         </article>
         <article className="card">
           <div className="card-head"><div><span className="eyebrow">RANK</span><h3>渠道排行</h3></div></div>
-          <ChartsHBar rows={a.by_channel || []} />
+          <LazyChart><ChartsHBar rows={a.by_channel || []} /></LazyChart>
         </article>
         <article className="card">
           <div className="card-head"><div><span className="eyebrow">TIME</span><h3>{(a.monthly || []).length > 1 ? '月度收支' : '余额'}</h3></div></div>
-          {(a.monthly || []).length > 1 ? <ChartsMonthly monthly={a.monthly || []} /> : <ChartsBalance series={a.balance_series || []} />}
+          {(a.monthly || []).length > 1 ? <LazyChart><ChartsMonthly monthly={a.monthly || []} /></LazyChart> : <LazyChart><ChartsBalance series={a.balance_series || []} /></LazyChart>}
         </article>
         <article className="card wide">
           <div className="card-head">
@@ -437,7 +445,7 @@ function Analysis({ data, period, setPeriod, onRefresh }) {
           {peopleAll.length ? (
             <>
               {people.length ? (
-                <ChartsHBar rows={people} nameKey="person_name" height={Math.max(180, people.length * 46)} />
+                <LazyChart><ChartsHBar rows={people} nameKey="person_name" height={Math.max(180, people.length * 46)} /></LazyChart>
               ) : (
                 <div className="empty-chart">当前筛选下暂无「已归属」支出，下面表格仍含未标记</div>
               )}
@@ -673,7 +681,8 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
   )
 }
 
-function Settings({ data, onRefresh, setError, setNotice, budgetMonth }) {
+function Settings({ data, onRefresh, onLoadExtras, setError, setNotice, budgetMonth }) {
+  useEffect(() => { onLoadExtras?.() }, [onLoadExtras])
   const [budgetAmount, setBudgetAmount] = useState('')
   const [budgetKind, setBudgetKind] = useState('consume')
   const [budgetPerson, setBudgetPerson] = useState('')
@@ -936,54 +945,78 @@ export default function App() {
   // Light refresh used after labeling so badge / home "等待整理" stay in sync
   const refreshCounters = useCallback(async () => {
     try {
-      const [digest, analytics] = await Promise.all([
-        api.digest().catch(() => null),
-        api.analytics(analyticsQuery()).catch(() => null),
-      ])
+      const q = analyticsQuery()
+      const month = period.mode === 'month' ? (period.month || currentMonth()) : currentMonth()
+      const boot = await api.bootstrap({ ...q, month, limit: 50 })
       setData((d) => ({
         ...d,
-        digest: digest || d.digest,
-        analytics: analytics || d.analytics,
+        digest: boot.digest || d.digest,
+        analytics: boot.analytics || d.analytics,
+        budgets: boot.budgets || d.budgets,
+        people: boot.people || d.people,
+        tags: boot.tags || d.tags,
       }))
     } catch {
       /* ignore soft refresh errors */
     }
-  }, [analyticsQuery])
+  }, [analyticsQuery, period.mode, period.month])
 
-  const loadAll = useCallback(async () => {
+  const loadAll = useCallback(async (opts = {}) => {
+    const { withSettings = false } = opts
     const seq = ++loadSeq.current
     setLoading(true)
     setError('')
     try {
       const month = period.mode === 'month' ? (period.month || currentMonth()) : currentMonth()
       const search = typeof data.search === 'string' ? data.search : ''
-      const [analytics, txns, people, tags, digest, budgets, rules, goals, cards] = await Promise.all([
-        api.analytics(analyticsQuery()),
-        api.transactions({ q: search, limit: 50, offset: 0 }),
-        api.people(),
-        api.tags(),
-        api.digest().catch(() => null),
-        api.budgets(month).catch(() => ({ items: [] })),
-        api.rules().catch(() => ({ items: [] })),
-        api.goals().catch(() => ({ items: [] })),
-        api.cards().catch(() => ({ items: [] })),
-      ])
-      // Drop stale responses if a newer loadAll started
+      const q = analyticsQuery()
+      // One round-trip for shell/home. Settings extras only when needed.
+      const bootOpts = { ...q, month, limit: 50 }
+      const tasks = [api.bootstrap(bootOpts)]
+      if (withSettings) {
+        tasks.push(
+          api.rules().catch(() => ({ items: [] })),
+          api.goals().catch(() => ({ items: [] })),
+          api.cards().catch(() => ({ items: [] })),
+        )
+      }
+      // If user is searching, still need filtered list (bootstrap returns unfiltered recent)
+      if (search) {
+        tasks.push(api.transactions({ q: search, limit: 50, offset: 0 }))
+      }
+      const results = await Promise.all(tasks)
       if (seq !== loadSeq.current) return
-      setData({
-        analytics,
-        transactions: txns.items || [],
-        txnTotal: txns.total || 0,
-        people: people.items || [],
-        tags: tags.items || [],
-        digest,
-        budgets: budgets.items || [],
-        rules: rules.items || [],
-        goals: goals.items || [],
-        cards: cards.items || [],
+      const boot = results[0]
+      let ri = 1
+      let rules = { items: data.rules || [] }
+      let goals = { items: data.goals || [] }
+      let cards = { items: data.cards || [] }
+      if (withSettings) {
+        rules = results[ri++] || rules
+        goals = results[ri++] || goals
+        cards = results[ri++] || cards
+      }
+      let transactions = boot.transactions || []
+      let txnTotal = boot.txn_total || 0
+      if (search) {
+        const tx = results[ri] || { items: [], total: 0 }
+        transactions = tx.items || []
+        txnTotal = tx.total || 0
+      }
+      setData((prev) => ({
+        analytics: boot.analytics,
+        transactions,
+        txnTotal,
+        people: boot.people || [],
+        tags: boot.tags || [],
+        digest: boot.digest,
+        budgets: boot.budgets || [],
+        rules: rules.items || prev.rules || [],
+        goals: goals.items || prev.goals || [],
+        cards: cards.items || prev.cards || [],
         search,
-        periodMonth: month,
-      })
+        periodMonth: boot.month || month,
+      }))
       auth.setAuthed(true)
     } catch (e) {
       if (seq !== loadSeq.current) return
@@ -993,6 +1026,24 @@ export default function App() {
       if (seq === loadSeq.current) setLoading(false)
     }
   }, [analyticsQuery, auth, data.search, period.mode, period.month])
+
+  const loadSettingsExtras = useCallback(async () => {
+    try {
+      const [rules, goals, cards] = await Promise.all([
+        api.rules().catch(() => ({ items: [] })),
+        api.goals().catch(() => ({ items: [] })),
+        api.cards().catch(() => ({ items: [] })),
+      ])
+      setData((d) => ({
+        ...d,
+        rules: rules.items || [],
+        goals: goals.items || [],
+        cards: cards.items || [],
+      }))
+    } catch (e) {
+      setError(e.message || '设置数据加载失败')
+    }
+  }, [])
 
   useEffect(() => {
     if (auth.authed) loadAll()
@@ -1016,10 +1067,10 @@ export default function App() {
         <LoginPage
           passwordLogin={auth.passwordLogin}
           setError={setError}
-          onSuccess={async () => {
-            auth.setAuthed(true)
+          onSuccess={() => {
             setError('')
-            await loadAll()
+            auth.setAuthed(true)
+            // loadAll triggered by useEffect when authed flips true
           }}
         />
       </>
@@ -1036,7 +1087,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home
           data={data}
-          onRefresh={loadAll}
+          onRefresh={() => loadAll()}
           onNav={(path) => nav(path)}
           onMonth={(m) => {
             setPeriod((p) => ({ ...p, mode: 'month', month: clampMonth(m) }))
@@ -1082,7 +1133,7 @@ export default function App() {
         />
         <Route
           path="/analysis"
-          element={<Analysis data={data} period={period} setPeriod={setPeriod} onRefresh={loadAll} />}
+          element={<Analysis data={data} period={period} setPeriod={setPeriod} onRefresh={() => loadAll()} />}
         />
         <Route
           path="/organize"
@@ -1103,7 +1154,8 @@ export default function App() {
           element={(
             <Settings
               data={data}
-              onRefresh={loadAll}
+              onRefresh={() => loadAll({ withSettings: true })}
+              onLoadExtras={loadSettingsExtras}
               setError={setError}
               setNotice={setNotice}
               budgetMonth={period.mode === 'month' ? (period.month || currentMonth()) : currentMonth()}
