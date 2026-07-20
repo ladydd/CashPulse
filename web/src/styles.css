@@ -95,7 +95,8 @@ a { color: inherit; }
 .balance-stats { position: absolute; left: 24px; right: 24px; bottom: 22px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .balance-stats div { padding: 10px; border-radius: 12px; background: rgb(255 255 255 / 8%); border: 1px solid rgb(255 255 255 / 10%); }
 .balance-stats span { display: block; color: rgb(255 255 255 / 55%); font-size: 11px; margin-bottom: 4px; }
-.balance-stats strong { font-size: 13px; }
+.balance-stats strong { display: block; font-size: 13px; }
+.balance-stats .stat-sub { display: block; margin-top: 3px; font-size: 10px; font-style: normal; color: rgb(255 255 255 / 48%); }
 .balance-stats .negative { color: #ffb4b4; }
 .budget-card { min-height: 250px; }
 .budget-line { margin-bottom: 14px; }

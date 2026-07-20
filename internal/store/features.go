@@ -546,8 +546,8 @@ func (s *Store) Digest(ctx context.Context, loc *time.Location) (*Digest, error)
 
 	d := &Digest{
 		Date:          dayStart.Format("2006-01-02"),
-		TodayExpense:  todayAll.Expense,
-		TodayIncome:   todayAll.Income,
+		TodayExpense:  todayAll.Expense, // net: out − refund
+		TodayIncome:   todayAll.Income,  // excludes refund
 		TodayTxnCount: todayAll.TxnCount,
 		TodayConsume:  todayConsume.Expense, // kept for API compatibility; UI prefers today_expense
 		WeekExpense:   weekAll.Expense,
@@ -559,7 +559,7 @@ func (s *Store) Digest(ctx context.Context, loc *time.Location) (*Digest, error)
 	} else if ok {
 		d.BalanceKnown = true
 		d.LatestBalance = bal
-		// Runway from all money out (not only consume).
+		// Runway from net daily spend (out − refund).
 		if weekAll.AvgDailyExpense > 0 {
 			d.DaysOfRunway = round2(bal / weekAll.AvgDailyExpense)
 		}
@@ -580,9 +580,12 @@ WHERE direction='out' AND person_id IS NULL AND occurred_at >= ? AND occurred_at
 	}
 	d.TopToday = top
 
-	// simple anomalies — use all outflow
+	// simple anomalies — net spend
 	if todayAll.Expense > 0 && weekAll.AvgDailyExpense > 0 && todayAll.Expense > weekAll.AvgDailyExpense*2 {
-		d.Anomalies = append(d.Anomalies, fmt.Sprintf("今日支出 %.2f 超过近7日均支出的2倍", todayAll.Expense))
+		d.Anomalies = append(d.Anomalies, fmt.Sprintf("今日净支出 %.2f 超过近7日均支出的2倍", todayAll.Expense))
+	}
+	if todayAll.Refund > 0 {
+		d.Anomalies = append(d.Anomalies, fmt.Sprintf("今日退款 %.2f 已从支出中冲减", todayAll.Refund))
 	}
 	if d.BalanceKnown && d.LatestBalance < 100 {
 		d.Anomalies = append(d.Anomalies, fmt.Sprintf("余额偏低：%.2f", d.LatestBalance))

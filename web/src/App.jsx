@@ -237,7 +237,11 @@ function Home({ data, onRefresh, onNav, onMonth }) {
           <div className="balance-time">{a.latest_balance_at ? `更新于 ${fmtTime(a.latest_balance_at)}${a.latest_card_last4 ? ` · 尾号${a.latest_card_last4}` : ''}` : '等待短信中的余额'}</div>
           <div className="balance-stats">
             <div><span>本月收入</span><strong>+{money(range.income)}</strong></div>
-            <div><span>本月支出</span><strong>−{money(range.expense)}</strong></div>
+            <div>
+              <span>本月支出</span>
+              <strong>−{money(range.expense)}</strong>
+              {range.refund > 0 ? <em className="stat-sub">已扣退款 {money(range.refund)}</em> : null}
+            </div>
             <div><span>本月结余</span><strong className={net < 0 ? 'negative' : ''}>{money(net, true)}</strong></div>
           </div>
         </article>
@@ -457,8 +461,15 @@ function Analysis({ data, period, setPeriod, onRefresh }) {
       </section>
 
       <section className="analysis-kpis">
-        <div><span>区间支出</span><strong>{money(range.expense)}</strong><small className={change > 0 ? 'bad' : 'good'}>{change == null ? '暂无对比' : `较上期 ${change > 0 ? '+' : ''}${change.toFixed(1)}%`}</small></div>
-        <div><span>区间收入</span><strong>{money(range.income)}</strong><small>{range.income_count || 0} 笔</small></div>
+        <div>
+          <span>区间净支出</span>
+          <strong>{money(range.expense)}</strong>
+          <small className={change > 0 ? 'bad' : 'good'}>
+            {change == null ? '暂无对比' : `较上期 ${change > 0 ? '+' : ''}${change.toFixed(1)}%`}
+            {range.refund > 0 ? ` · 退款 −${money(range.refund)}` : ''}
+          </small>
+        </div>
+        <div><span>区间收入</span><strong>{money(range.income)}</strong><small>{range.income_count || 0} 笔（不含退款）</small></div>
         <div><span>日均（金额）</span><strong>{money(range.avg_daily_expense)}</strong><small>{range.active_days || 0} 个有支出日</small></div>
         <div><span>结余</span><strong>{money((range.income || 0) - (range.expense || 0), true)}</strong><small>{range.txn_count || 0} 笔</small></div>
       </section>

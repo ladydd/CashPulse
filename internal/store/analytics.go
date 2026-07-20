@@ -70,15 +70,65 @@ type BalanceHealth struct {
 }
 
 // RangeTotals is the headline numbers for a window.
+// Accounting policy (month/range rollup):
+//   - expense  = net money out = gross out − refunds (退款冲减支出，不算“花了”)
+//   - income   = real inflows only (工资/转入…); refunds are NOT income
+//   - refund   = kind=refund inflows (for transparency)
+//   - net      = income − expense (after refund netting)
 type RangeTotals struct {
-	Expense         float64 `json:"expense"`
-	Income          float64 `json:"income"`
+	Expense         float64 `json:"expense"`       // net spend (out − refund)
+	ExpenseGross    float64 `json:"expense_gross"` // raw direction=out sum
+	Refund          float64 `json:"refund"`        // kind=refund inflows
+	Income          float64 `json:"income"`        // inflows excluding refund
 	Net             float64 `json:"net"`
 	TxnCount        int     `json:"txn_count"`
 	ExpenseCount    int     `json:"expense_count"`
 	IncomeCount     int     `json:"income_count"`
+	RefundCount     int     `json:"refund_count"`
 	AvgDailyExpense float64 `json:"avg_daily_expense"`
 	ActiveDays      int     `json:"active_days"`
+}
+
+// applyCashflow classifies one row into expense / refund / income buckets.
+// Refunds (direction=in + kind=refund) reduce net spend and never count as income.
+func applyCashflow(amount float64, direction, kind string, expense, refund, income *float64, expenseN, refundN, incomeN *int) {
+	switch model.Direction(direction) {
+	case model.DirectionOut:
+		*expense += amount
+		if expenseN != nil {
+			*expenseN++
+		}
+	case model.DirectionIn:
+		if kind == string(model.KindRefund) {
+			*refund += amount
+			if refundN != nil {
+				*refundN++
+			}
+		} else {
+			*income += amount
+			if incomeN != nil {
+				*incomeN++
+			}
+		}
+	}
+}
+
+func finalizeRangeTotals(tot *RangeTotals) {
+	tot.ExpenseGross = round2(tot.ExpenseGross)
+	tot.Refund = round2(tot.Refund)
+	tot.Income = round2(tot.Income)
+	// Net spend: money that actually left after refunds in the same window.
+	// Can go negative if refunds exceed outs (rare; still honest).
+	tot.Expense = round2(tot.ExpenseGross - tot.Refund)
+	tot.Net = round2(tot.Income - tot.Expense)
+	if tot.ActiveDays > 0 {
+		// Avg daily uses net spend floor at 0 so runway doesn't invert on refund-heavy days.
+		netForAvg := tot.Expense
+		if netForAvg < 0 {
+			netForAvg = 0
+		}
+		tot.AvgDailyExpense = round2(netForAvg / float64(tot.ActiveDays))
+	}
 }
 
 // Analytics is the full analysis payload for the dashboard.
@@ -338,7 +388,7 @@ func resolveAnalyticsWindow(q AnalyticsQuery, todayStart time.Time, s *Store) (f
 
 func (s *Store) rangeTotals(ctx context.Context, from, toExclusive time.Time, loc *time.Location, kind string) (RangeTotals, error) {
 	q := `
-SELECT amount, direction, occurred_at
+SELECT amount, direction, COALESCE(kind,''), occurred_at
 FROM transactions
 WHERE occurred_at >= ? AND occurred_at < ?`
 	args := []any{from.UTC().Format(time.RFC3339Nano), toExclusive.UTC().Format(time.RFC3339Nano)}
@@ -356,8 +406,8 @@ WHERE occurred_at >= ? AND occurred_at < ?`
 	active := map[string]struct{}{}
 	for rows.Next() {
 		var amount float64
-		var direction, occurred string
-		if err := rows.Scan(&amount, &direction, &occurred); err != nil {
+		var direction, k, occurred string
+		if err := rows.Scan(&amount, &direction, &k, &occurred); err != nil {
 			return RangeTotals{}, err
 		}
 		tot.TxnCount++
@@ -365,22 +415,10 @@ WHERE occurred_at >= ? AND occurred_at < ?`
 		if err == nil {
 			active[ts.In(loc).Format("2006-01-02")] = struct{}{}
 		}
-		switch model.Direction(direction) {
-		case model.DirectionOut:
-			tot.Expense += amount
-			tot.ExpenseCount++
-		case model.DirectionIn:
-			tot.Income += amount
-			tot.IncomeCount++
-		}
+		applyCashflow(amount, direction, k, &tot.ExpenseGross, &tot.Refund, &tot.Income, &tot.ExpenseCount, &tot.RefundCount, &tot.IncomeCount)
 	}
 	tot.ActiveDays = len(active)
-	tot.Expense = round2(tot.Expense)
-	tot.Income = round2(tot.Income)
-	tot.Net = round2(tot.Income - tot.Expense)
-	if tot.ActiveDays > 0 {
-		tot.AvgDailyExpense = round2(tot.Expense / float64(tot.ActiveDays))
-	}
+	finalizeRangeTotals(&tot)
 	return tot, rows.Err()
 }
 
@@ -391,7 +429,7 @@ func (s *Store) DailySummariesFrom(ctx context.Context, from time.Time, nDays in
 	}
 	end := from.AddDate(0, 0, nDays)
 	q := `
-SELECT amount, direction, occurred_at
+SELECT amount, direction, COALESCE(kind,''), occurred_at
 FROM transactions
 WHERE occurred_at >= ? AND occurred_at < ?`
 	args := []any{from.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano)}
@@ -407,18 +445,22 @@ ORDER BY occurred_at ASC`
 	}
 	defer rows.Close()
 
-	byDate := make(map[string]*model.DailySummary, nDays)
+	type dayAcc struct {
+		out, refund, income float64
+		n                   int
+	}
+	byDate := make(map[string]*dayAcc, nDays)
 	order := make([]string, 0, nDays)
 	for i := 0; i < nDays; i++ {
 		d := from.AddDate(0, 0, i).Format("2006-01-02")
-		byDate[d] = &model.DailySummary{Date: d}
+		byDate[d] = &dayAcc{}
 		order = append(order, d)
 	}
 
 	for rows.Next() {
 		var amount float64
-		var direction, occurred string
-		if err := rows.Scan(&amount, &direction, &occurred); err != nil {
+		var direction, k, occurred string
+		if err := rows.Scan(&amount, &direction, &k, &occurred); err != nil {
 			return nil, err
 		}
 		ts, err := parseTimeFlex(occurred)
@@ -430,13 +472,8 @@ ORDER BY occurred_at ASC`
 		if !ok {
 			continue
 		}
-		sum.TxnCount++
-		switch model.Direction(direction) {
-		case model.DirectionOut:
-			sum.Expense += amount
-		case model.DirectionIn:
-			sum.Income += amount
-		}
+		sum.n++
+		applyCashflow(amount, direction, k, &sum.out, &sum.refund, &sum.income, nil, nil, nil)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -444,18 +481,23 @@ ORDER BY occurred_at ASC`
 
 	out := make([]model.DailySummary, 0, len(order))
 	for _, d := range order {
-		sum := byDate[d]
-		sum.Expense = round2(sum.Expense)
-		sum.Income = round2(sum.Income)
-		sum.Net = round2(sum.Income - sum.Expense)
-		out = append(out, *sum)
+		acc := byDate[d]
+		expense := round2(acc.out - acc.refund)
+		income := round2(acc.income)
+		out = append(out, model.DailySummary{
+			Date:     d,
+			Expense:  expense,
+			Income:   income,
+			Net:      round2(income - expense),
+			TxnCount: acc.n,
+		})
 	}
 	return out, nil
 }
 
 func (s *Store) monthlyStats(ctx context.Context, from, toExclusive time.Time, loc *time.Location, kind string) ([]MonthlyStat, error) {
 	q := `
-SELECT amount, direction, occurred_at
+SELECT amount, direction, COALESCE(kind,''), occurred_at
 FROM transactions
 WHERE occurred_at >= ? AND occurred_at < ?`
 	args := []any{from.UTC().Format(time.RFC3339Nano), toExclusive.UTC().Format(time.RFC3339Nano)}
@@ -471,22 +513,26 @@ ORDER BY occurred_at ASC`
 	}
 	defer rows.Close()
 
+	type monAcc struct {
+		out, refund, income float64
+		n                   int
+	}
 	order := []string{}
-	by := map[string]*MonthlyStat{}
+	by := map[string]*monAcc{}
 	// prefill months from from..to
 	cur := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, loc)
 	endM := time.Date(toExclusive.Add(-time.Nanosecond).Year(), toExclusive.Add(-time.Nanosecond).Month(), 1, 0, 0, 0, 0, loc)
 	for !cur.After(endM) {
 		k := cur.Format("2006-01")
-		by[k] = &MonthlyStat{Month: k}
+		by[k] = &monAcc{}
 		order = append(order, k)
 		cur = cur.AddDate(0, 1, 0)
 	}
 
 	for rows.Next() {
 		var amount float64
-		var direction, occurred string
-		if err := rows.Scan(&amount, &direction, &occurred); err != nil {
+		var direction, knd, occurred string
+		if err := rows.Scan(&amount, &direction, &knd, &occurred); err != nil {
 			return nil, err
 		}
 		ts, err := parseTimeFlex(occurred)
@@ -496,17 +542,12 @@ ORDER BY occurred_at ASC`
 		k := ts.In(loc).Format("2006-01")
 		st, ok := by[k]
 		if !ok {
-			st = &MonthlyStat{Month: k}
+			st = &monAcc{}
 			by[k] = st
 			order = append(order, k)
 		}
-		st.TxnCount++
-		switch model.Direction(direction) {
-		case model.DirectionOut:
-			st.Expense += amount
-		case model.DirectionIn:
-			st.Income += amount
-		}
+		st.n++
+		applyCashflow(amount, direction, knd, &st.out, &st.refund, &st.income, nil, nil, nil)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -514,11 +555,16 @@ ORDER BY occurred_at ASC`
 
 	out := make([]MonthlyStat, 0, len(order))
 	for _, k := range order {
-		st := by[k]
-		st.Expense = round2(st.Expense)
-		st.Income = round2(st.Income)
-		st.Net = round2(st.Income - st.Expense)
-		out = append(out, *st)
+		acc := by[k]
+		expense := round2(acc.out - acc.refund)
+		income := round2(acc.income)
+		out = append(out, MonthlyStat{
+			Month:    k,
+			Expense:  expense,
+			Income:   income,
+			Net:      round2(income - expense),
+			TxnCount: acc.n,
+		})
 	}
 	return out, nil
 }

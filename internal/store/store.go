@@ -440,7 +440,7 @@ func (s *Store) DailySummaries(ctx context.Context, nDays int, loc *time.Locatio
 	startUTC := start.UTC().Format(time.RFC3339Nano)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT amount, direction, occurred_at
+SELECT amount, direction, COALESCE(kind,''), occurred_at
 FROM transactions
 WHERE occurred_at >= ?
 ORDER BY occurred_at ASC`, startUTC)
@@ -449,19 +449,23 @@ ORDER BY occurred_at ASC`, startUTC)
 	}
 	defer rows.Close()
 
-	byDate := make(map[string]*model.DailySummary, nDays)
 	order := make([]string, 0, nDays)
 	for i := 0; i < nDays; i++ {
-		d := start.AddDate(0, 0, i).Format("2006-01-02")
-		byDate[d] = &model.DailySummary{Date: d}
-		order = append(order, d)
+		order = append(order, start.AddDate(0, 0, i).Format("2006-01-02"))
 	}
 
+	type dayAcc struct {
+		out, refund, income float64
+		n                   int
+	}
+	accBy := make(map[string]*dayAcc, nDays)
+	for _, d := range order {
+		accBy[d] = &dayAcc{}
+	}
 	for rows.Next() {
 		var amount float64
-		var direction string
-		var occurred string
-		if err := rows.Scan(&amount, &direction, &occurred); err != nil {
+		var direction, kind, occurred string
+		if err := rows.Scan(&amount, &direction, &kind, &occurred); err != nil {
 			return nil, err
 		}
 		ts, err := time.Parse(time.RFC3339Nano, occurred)
@@ -472,17 +476,12 @@ ORDER BY occurred_at ASC`, startUTC)
 			}
 		}
 		day := ts.In(loc).Format("2006-01-02")
-		sum, ok := byDate[day]
+		acc, ok := accBy[day]
 		if !ok {
 			continue
 		}
-		sum.TxnCount++
-		switch model.Direction(direction) {
-		case model.DirectionOut:
-			sum.Expense += amount
-		case model.DirectionIn:
-			sum.Income += amount
-		}
+		acc.n++
+		applyCashflow(amount, direction, kind, &acc.out, &acc.refund, &acc.income, nil, nil, nil)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -490,12 +489,16 @@ ORDER BY occurred_at ASC`, startUTC)
 
 	out := make([]model.DailySummary, 0, len(order))
 	for _, d := range order {
-		sum := byDate[d]
-		sum.Net = sum.Income - sum.Expense
-		sum.Expense = round2(sum.Expense)
-		sum.Income = round2(sum.Income)
-		sum.Net = round2(sum.Net)
-		out = append(out, *sum)
+		acc := accBy[d]
+		expense := round2(acc.out - acc.refund)
+		income := round2(acc.income)
+		out = append(out, model.DailySummary{
+			Date:     d,
+			Expense:  expense,
+			Income:   income,
+			Net:      round2(income - expense),
+			TxnCount: acc.n,
+		})
 	}
 	return out, nil
 }
@@ -509,7 +512,7 @@ func (s *Store) DaySummary(ctx context.Context, day time.Time, loc *time.Locatio
 	end := start.AddDate(0, 0, 1)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT amount, direction
+SELECT amount, direction, COALESCE(kind,'')
 FROM transactions
 WHERE occurred_at >= ? AND occurred_at < ?`,
 		start.UTC().Format(time.RFC3339Nano),
@@ -520,26 +523,29 @@ WHERE occurred_at >= ? AND occurred_at < ?`,
 	}
 	defer rows.Close()
 
-	var sum model.TodaySummary
-	sum.Date = start.Format("2006-01-02")
+	var outAmt, refundAmt, incomeAmt float64
+	var n int
 	for rows.Next() {
 		var amount float64
-		var direction string
-		if err := rows.Scan(&amount, &direction); err != nil {
+		var direction, kind string
+		if err := rows.Scan(&amount, &direction, &kind); err != nil {
 			return model.TodaySummary{}, err
 		}
-		sum.TxnCount++
-		switch model.Direction(direction) {
-		case model.DirectionOut:
-			sum.Expense += amount
-		case model.DirectionIn:
-			sum.Income += amount
-		}
+		n++
+		applyCashflow(amount, direction, kind, &outAmt, &refundAmt, &incomeAmt, nil, nil, nil)
 	}
-	sum.Expense = round2(sum.Expense)
-	sum.Income = round2(sum.Income)
-	sum.Net = round2(sum.Income - sum.Expense)
-	return sum, rows.Err()
+	if err := rows.Err(); err != nil {
+		return model.TodaySummary{}, err
+	}
+	expense := round2(outAmt - refundAmt)
+	income := round2(incomeAmt)
+	return model.TodaySummary{
+		Date:     start.Format("2006-01-02"),
+		Expense:  expense,
+		Income:   income,
+		Net:      round2(income - expense),
+		TxnCount: n,
+	}, nil
 }
 
 type scannable interface {
