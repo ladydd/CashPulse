@@ -84,14 +84,15 @@ export default function BalanceScratch({ value, known = false, emptyText = 'æš‚æ
 
   const scheduleReseal = useCallback(() => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    // Short peek: reseal soon after user stops scratching.
     hideTimerRef.current = setTimeout(() => {
       setResealing(true)
       resealTimerRef.current = setTimeout(() => {
         paintCover()
         setHint(true)
         setResealing(false)
-      }, 480)
-    }, 4200)
+      }, 320)
+    }, 1800)
   }, [paintCover])
 
   useEffect(() => {

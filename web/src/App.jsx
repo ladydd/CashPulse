@@ -239,7 +239,16 @@ function Home({ data, onRefresh, onNav, onMonth }) {
             value={money(a.latest_balance)}
             emptyText="暂无余额"
           />
-          <div className="balance-time">{a.latest_balance_at ? `更新于 ${fmtTime(a.latest_balance_at)}${a.latest_card_last4 ? ` · 尾号${a.latest_card_last4}` : ''}` : '等待短信中的余额'}</div>
+          <div className="balance-meta">
+            {a.latest_balance_at ? (
+              <>
+                <span className="balance-meta-line">更新于 {fmtTime(a.latest_balance_at)}</span>
+                {a.latest_card_last4 ? <span className="balance-meta-line">尾号 {a.latest_card_last4}</span> : null}
+              </>
+            ) : (
+              <span className="balance-meta-line">等待短信中的余额</span>
+            )}
+          </div>
           <div className="balance-stats">
             <div><span>本月收入</span><strong>+{money(range.income)}</strong></div>
             <div>
