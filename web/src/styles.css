@@ -414,3 +414,5 @@ a { color: inherit; }
   height: 36px;
 }
 .welcome h2 { font-size: 28px; }
+
+.organize-item.is-busy { opacity: 0.55; pointer-events: none; }

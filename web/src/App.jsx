@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { api, clearToken, getToken } from './api/client'
 import { currentMonth, greeting, money, monthLabel, shiftMonth, ymd, fmtTime } from './lib/format'
@@ -234,7 +234,7 @@ function Home({ data, onRefresh, onNav, onMonth }) {
         <article className="quick-stat"><span className="quick-icon coral">今</span><div><span>今天花了</span><strong>{money(d.today_consume ?? a.today?.expense ?? 0)}</strong><small>{d.today_txn_count ?? 0} 笔</small></div></article>
         <article className="quick-stat"><span className="quick-icon blue">均</span><div><span>日均消费</span><strong>{money(range.avg_daily_expense)}</strong><small>{range.active_days || 0} 个消费日</small></div></article>
         <article className="quick-stat"><span className="quick-icon green">安</span><div><span>资金安全垫</span><strong>{a.balance_health?.days_of_runway ? `${Math.round(a.balance_health.days_of_runway)} 天` : '—'}</strong><small>按消费日均</small></div></article>
-        <article className="quick-stat actionable" onClick={() => onNav('/organize')}><span className="quick-icon amber">理</span><div><span>等待整理</span><strong>{d.unlabeled_week ?? a.unlabeled_count ?? 0} 笔</strong><small>点此去归类</small></div></article>
+        <article className="quick-stat actionable" onClick={() => onNav('/organize')}><span className="quick-icon amber">理</span><div><span>等待整理</span><strong>{(d.unlabeled_week ?? a.unlabeled_count ?? 0)} 笔</strong><small>点此去归类</small></div></article>
       </section>
 
       <section className="home-content">
@@ -484,10 +484,13 @@ function Analysis({ data, period, setPeriod, onRefresh }) {
   )
 }
 
-function Organize({ data, onRefresh, onLabel }) {
+function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
   const [window, setWindow] = useState('today')
   const [onlyUnlabeled, setOnlyUnlabeled] = useState(true)
   const [queue, setQueue] = useState([])
+  const [busyId, setBusyId] = useState(null)
+  const [loadErr, setLoadErr] = useState('')
+  const [actionErr, setActionErr] = useState('')
 
   const range = useMemo(() => {
     const now = new Date()
@@ -504,26 +507,79 @@ function Organize({ data, onRefresh, onLabel }) {
   }, [window])
 
   const load = useCallback(async () => {
-    const res = await api.transactions({ limit: 200, unlabeled: onlyUnlabeled, from: range.from, to: range.to })
+    const res = await api.transactions({
+      limit: 200,
+      unlabeled: onlyUnlabeled,
+      from: range.from,
+      to: range.to,
+    })
     setQueue(res.items || [])
+    return res
   }, [onlyUnlabeled, range.from, range.to])
 
-  const [loadErr, setLoadErr] = useState('')
   useEffect(() => {
     setLoadErr('')
     load().catch((e) => setLoadErr(e.message || '加载失败'))
   }, [load])
 
+  async function handleLabel(txnId, body) {
+    setActionErr('')
+    setBusyId(txnId)
+    try {
+      const updated = await onLabel(txnId, body)
+      // Update local queue immediately so UI doesn't lag
+      setQueue((prev) => {
+        const next = prev.map((t) => (t.id === txnId ? { ...t, ...updated } : t))
+        // If filtering unlabeled and person assigned, remove from list
+        if (onlyUnlabeled && body && Object.prototype.hasOwnProperty.call(body, 'person_id') && body.person_id != null) {
+          return next.filter((t) => t.id !== txnId)
+        }
+        // cleared person while unlabeled filter: keep / will reappear as unlabeled
+        if (onlyUnlabeled && body && body.person_id == null && Object.prototype.hasOwnProperty.call(body, 'person_id')) {
+          // after clear, item should stay as unlabeled - refresh from server for accuracy
+          return next
+        }
+        return next
+      })
+      // Refresh badge + home counters (digest/analytics) without waiting on full page reload
+      if (onCountersRefresh) await onCountersRefresh()
+      // Re-fetch queue for consistency (especially tag-only changes / filter)
+      await load()
+    } catch (e) {
+      setActionErr(e.message || '打标失败，请重试')
+      try { await load() } catch { /* ignore */ }
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   return (
     <div className="page-enter narrow-page">
       <div className="page-title">
         <div><span className="eyebrow">INBOX</span><h2>整理流水</h2><p>只处理新流水 · 历史不强制补标</p></div>
-        <button className="icon-btn" type="button" onClick={() => { load(); onRefresh() }}>↻</button>
+        <button
+          className="icon-btn"
+          type="button"
+          onClick={() => {
+            setLoadErr('')
+            load().catch((e) => setLoadErr(e.message || '加载失败'))
+            onRefresh?.()
+          }}
+        >
+          ↻
+        </button>
       </div>
       <section className="organize-summary">
-        <div className="organize-count"><strong>{queue.length}</strong><span>{onlyUnlabeled ? '笔待归类' : '笔流水'}</span></div>
-        <div><strong>{range.label}</strong><p>{range.from}{range.from !== range.to ? ` — ${range.to}` : ''}</p></div>
+        <div className="organize-count">
+          <strong>{queue.length}</strong>
+          <span>{onlyUnlabeled ? '笔待归类' : '笔流水'}</span>
+        </div>
+        <div>
+          <strong>{range.label}</strong>
+          <p>{range.from}{range.from !== range.to ? ` — ${range.to}` : ''}</p>
+        </div>
       </section>
+      {actionErr ? <div className="banner err">{actionErr}</div> : null}
       <section className="card">
         <div className="organize-toolbar">
           <div className="seg">
@@ -545,49 +601,60 @@ function Organize({ data, onRefresh, onLabel }) {
         ) : (
           <div className="organize-list">
             {queue.map((t) => (
-              <article className="organize-item" key={t.id}>
+              <article className={`organize-item ${busyId === t.id ? 'is-busy' : ''}`} key={t.id}>
                 <div className="organize-main">
                   <span className="txn-icon">{(t.merchant || '账').slice(0, 1)}</span>
                   <div className="txn-copy">
                     <strong>{t.merchant || t.bank || '未知'}</strong>
                     <span>{fmtTime(t.occurred_at)} · {t.category || t.kind}</span>
                   </div>
-                  <div className={`txn-amount ${t.direction === 'in' ? 'income' : ''}`}>{t.direction === 'in' ? '+' : '−'}{money(t.amount)}</div>
+                  <div className={`txn-amount ${t.direction === 'in' ? 'income' : ''}`}>
+                    {t.direction === 'in' ? '+' : '−'}{money(t.amount)}
+                  </div>
                 </div>
                 <div className="label-row">
                   <span>归属</span>
                   <div>
-                    {data.people.map((p) => (
+                    {(data.people || []).map((p) => (
                       <button
                         key={p.id}
                         type="button"
+                        disabled={busyId === t.id}
                         className={`chip-btn ${t.person_id === p.id ? 'active' : ''}`}
                         style={{ '--chip': p.color }}
-                        onClick={() => onLabel(t.id, { person_id: p.id }).then(load)}
+                        onClick={() => handleLabel(t.id, { person_id: p.id })}
                       >
                         {p.name}
                       </button>
                     ))}
-                    <button type="button" className="chip-btn" onClick={() => onLabel(t.id, { person_id: null }).then(load)}>清除</button>
+                    <button
+                      type="button"
+                      className="chip-btn"
+                      disabled={busyId === t.id}
+                      onClick={() => handleLabel(t.id, { person_id: null })}
+                    >
+                      清除
+                    </button>
                   </div>
                 </div>
                 {data.tags?.length ? (
                   <div className="label-row">
                     <span>标签</span>
                     <div>
-                      {data.tags.map((tag) => {
+                      {(data.tags || []).map((tag) => {
                         const on = (t.tags || []).some((x) => x.id === tag.id)
                         return (
                           <button
                             key={tag.id}
                             type="button"
+                            disabled={busyId === t.id}
                             className={`chip-btn ${on ? 'active' : ''}`}
                             style={{ '--chip': tag.color }}
                             onClick={() => {
                               const have = new Set((t.tags || []).map((x) => x.id))
                               if (have.has(tag.id)) have.delete(tag.id)
                               else have.add(tag.id)
-                              onLabel(t.id, { tag_ids: [...have] }).then(load)
+                              handleLabel(t.id, { tag_ids: [...have] })
                             }}
                           >
                             {tag.name}
@@ -855,6 +922,9 @@ export default function App() {
     periodMonth: currentMonth(),
   })
   const [loadingMore, setLoadingMore] = useState(false)
+  const loadSeq = useRef(0)
+
+
 
   const analyticsQuery = useCallback(() => {
     const kind = period.kind || 'consume'
@@ -863,7 +933,25 @@ export default function App() {
     return { days: period.preset, kind }
   }, [period])
 
+  // Light refresh used after labeling so badge / home "等待整理" stay in sync
+  const refreshCounters = useCallback(async () => {
+    try {
+      const [digest, analytics] = await Promise.all([
+        api.digest().catch(() => null),
+        api.analytics(analyticsQuery()).catch(() => null),
+      ])
+      setData((d) => ({
+        ...d,
+        digest: digest || d.digest,
+        analytics: analytics || d.analytics,
+      }))
+    } catch {
+      /* ignore soft refresh errors */
+    }
+  }, [analyticsQuery])
+
   const loadAll = useCallback(async () => {
+    const seq = ++loadSeq.current
     setLoading(true)
     setError('')
     try {
@@ -880,6 +968,8 @@ export default function App() {
         api.goals().catch(() => ({ items: [] })),
         api.cards().catch(() => ({ items: [] })),
       ])
+      // Drop stale responses if a newer loadAll started
+      if (seq !== loadSeq.current) return
       setData({
         analytics,
         transactions: txns.items || [],
@@ -896,10 +986,11 @@ export default function App() {
       })
       auth.setAuthed(true)
     } catch (e) {
+      if (seq !== loadSeq.current) return
       setError(e.message || '加载失败')
       if (e.status === 401) auth.setAuthed(false)
     } finally {
-      setLoading(false)
+      if (seq === loadSeq.current) setLoading(false)
     }
   }, [analyticsQuery, auth, data.search, period.mode, period.month])
 
@@ -935,7 +1026,7 @@ export default function App() {
     )
   }
 
-  const labelCount = data.digest?.unlabeled_week || 0
+  const labelCount = data.digest?.unlabeled_week ?? data.analytics?.unlabeled_count ?? 0
 
   return (
     <Shell onLogout={handleLogout} labelCount={labelCount}>
@@ -998,8 +1089,12 @@ export default function App() {
           element={(
             <Organize
               data={data}
-              onRefresh={loadAll}
-              onLabel={(id, body) => api.label(id, body)}
+              onRefresh={() => loadAll()}
+              onCountersRefresh={refreshCounters}
+              onLabel={async (id, body) => {
+                // api.label returns updated transaction
+                return api.label(id, body)
+              }}
             />
           )}
         />
