@@ -205,7 +205,8 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := r.URL.Query().Get("kind")
 	if kind == "" {
-		kind = "consume" // default: 日常消费，剔除大额转账噪音
+		// all outflow (consume + transfer + fee + invest…); direction=in never counts as expense
+		kind = "all"
 	}
 	stats, err := h.svc.Analytics(r.Context(), days, from, to, kind)
 	if err != nil {
@@ -246,7 +247,7 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := r.URL.Query().Get("kind")
 	if kind == "" {
-		kind = "consume"
+		kind = "all"
 	}
 	if month == "" {
 		// budget month defaults to calendar month of "to" or today

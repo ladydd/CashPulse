@@ -227,7 +227,7 @@ function Home({ data, onRefresh, onNav, onMonth }) {
               <div className="budget-line" key={b.id}>
                 <div className="budget-name">
                   <strong>{b.person_name || '全账户'}</strong>
-                  <span>{b.kind === 'consume' ? '日常消费' : b.kind}</span>
+                  <span>{b.kind === 'all' ? '全部支出' : b.kind === 'consume' ? '日常消费' : b.kind === 'transfer' ? '转账' : b.kind}</span>
                 </div>
                 <div className="budget-number"><strong>{money(left)}</strong><span>可用</span></div>
                 <div className={`progress ${tone}`}><span style={{ width: `${pct}%` }} /></div>
@@ -239,16 +239,16 @@ function Home({ data, onRefresh, onNav, onMonth }) {
       </section>
 
       <section className="quick-grid">
-        <article className="quick-stat"><span className="quick-icon coral">今</span><div><span>今天花了</span><strong>{money(d.today_consume ?? a.today?.expense ?? 0)}</strong><small>{d.today_txn_count ?? 0} 笔</small></div></article>
-        <article className="quick-stat"><span className="quick-icon blue">均</span><div><span>日均消费</span><strong>{money(range.avg_daily_expense)}</strong><small>{range.active_days || 0} 个消费日</small></div></article>
-        <article className="quick-stat"><span className="quick-icon green">安</span><div><span>资金安全垫</span><strong>{a.balance_health?.days_of_runway ? `${Math.round(a.balance_health.days_of_runway)} 天` : '—'}</strong><small>按消费日均</small></div></article>
+        <article className="quick-stat"><span className="quick-icon coral">今</span><div><span>今天花了</span><strong>{money(d.today_expense ?? a.today?.expense ?? 0)}</strong><small>{d.today_txn_count ?? 0} 笔</small></div></article>
+        <article className="quick-stat"><span className="quick-icon blue">均</span><div><span>日均支出</span><strong>{money(range.avg_daily_expense)}</strong><small>{range.active_days || 0} 个有支出日</small></div></article>
+        <article className="quick-stat"><span className="quick-icon green">安</span><div><span>资金安全垫</span><strong>{a.balance_health?.days_of_runway ? `${Math.round(a.balance_health.days_of_runway)} 天` : '—'}</strong><small>按支出日均</small></div></article>
         <article className="quick-stat actionable" onClick={() => onNav('/organize')}><span className="quick-icon amber">理</span><div><span>等待整理</span><strong>{(d.unlabeled_week ?? a.unlabeled_count ?? 0)} 笔</strong><small>点此去归类</small></div></article>
       </section>
 
       <section className="home-content">
         <article className="card">
           <div className="card-head">
-            <div><span className="eyebrow">SPENDING</span><h3>本月消费节奏（按金额）</h3></div>
+            <div><span className="eyebrow">SPENDING</span><h3>本月支出节奏（按金额）</h3></div>
             <button type="button" className="text-btn" onClick={() => onNav('/analysis')}>分析 →</button>
           </div>
           <LazyChart><ChartsDaily daily={a.daily || []} /></LazyChart>
@@ -394,9 +394,9 @@ function Analysis({ data, period, setPeriod, onRefresh }) {
         </div>
         <div className="seg">
           {[
+            ['all', '全部支出'],
             ['consume', '仅消费'],
             ['transfer', '仅转账'],
-            ['all', '全部类型'],
           ].map(([k, lab]) => (
             <button
               key={k}
@@ -413,7 +413,7 @@ function Analysis({ data, period, setPeriod, onRefresh }) {
       <section className="analysis-kpis">
         <div><span>区间支出</span><strong>{money(range.expense)}</strong><small className={change > 0 ? 'bad' : 'good'}>{change == null ? '暂无对比' : `较上期 ${change > 0 ? '+' : ''}${change.toFixed(1)}%`}</small></div>
         <div><span>区间收入</span><strong>{money(range.income)}</strong><small>{range.income_count || 0} 笔</small></div>
-        <div><span>日均（金额）</span><strong>{money(range.avg_daily_expense)}</strong><small>{range.active_days || 0} 个消费日</small></div>
+        <div><span>日均（金额）</span><strong>{money(range.avg_daily_expense)}</strong><small>{range.active_days || 0} 个有支出日</small></div>
         <div><span>结余</span><strong>{money((range.income || 0) - (range.expense || 0), true)}</strong><small>{range.txn_count || 0} 笔</small></div>
       </section>
 
@@ -684,7 +684,7 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
 function Settings({ data, onRefresh, onLoadExtras, setError, setNotice, budgetMonth }) {
   useEffect(() => { onLoadExtras?.() }, [onLoadExtras])
   const [budgetAmount, setBudgetAmount] = useState('')
-  const [budgetKind, setBudgetKind] = useState('consume')
+  const [budgetKind, setBudgetKind] = useState('all')
   const [budgetPerson, setBudgetPerson] = useState('')
   const [goalName, setGoalName] = useState('')
   const [goalTarget, setGoalTarget] = useState('')
@@ -711,9 +711,9 @@ function Settings({ data, onRefresh, onLoadExtras, setError, setNotice, budgetMo
         <div className="form-row">
           <input className="field" type="number" placeholder="金额" value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} />
           <select className="field" value={budgetKind} onChange={(e) => setBudgetKind(e.target.value)}>
-            <option value="consume">日常消费</option>
             <option value="all">全部支出</option>
-            <option value="transfer">转账</option>
+            <option value="consume">日常消费</option>
+            <option value="transfer">仅转账</option>
           </select>
           <select className="field" value={budgetPerson} onChange={(e) => setBudgetPerson(e.target.value)}>
             <option value="">全账户</option>
@@ -915,7 +915,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(false)
-  const [period, setPeriod] = useState({ mode: 'month', preset: 30, month: currentMonth(), kind: 'consume', from: '', to: '' })
+  // kind=all：统计所有 direction=out（消费+转账+手续费+理财…），不再默认只看 consume
+  const [period, setPeriod] = useState({ mode: 'month', preset: 30, month: currentMonth(), kind: 'all', from: '', to: '' })
   const [data, setData] = useState({
     analytics: null,
     transactions: [],
@@ -936,7 +937,7 @@ export default function App() {
 
 
   const analyticsQuery = useCallback(() => {
-    const kind = period.kind || 'consume'
+    const kind = period.kind || 'all'
     if (period.mode === 'month') return { month: period.month || currentMonth(), kind }
     if (period.mode === 'custom' && period.from && period.to) return { from: period.from, to: period.to, kind }
     return { days: period.preset, kind }

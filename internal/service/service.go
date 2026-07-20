@@ -42,7 +42,9 @@ type Bootstrap struct {
 // Settings-only data (rules/goals/cards) is loaded by dedicated endpoints.
 func (s *Service) Bootstrap(ctx context.Context, days int, from, to, kind, month string, txnLimit int) (*Bootstrap, error) {
 	if kind == "" {
-		kind = "consume"
+		// Default: all directions of money leaving the account (consume/transfer/fee/invest…).
+		// Analytics still supports kind=consume for “日常消费 only”.
+		kind = "all"
 	}
 	if txnLimit <= 0 {
 		txnLimit = 50

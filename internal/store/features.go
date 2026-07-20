@@ -151,7 +151,7 @@ func (s *Store) UpsertBudget(ctx context.Context, month string, personID *int64,
 		return Budget{}, fmt.Errorf("month required")
 	}
 	if kind == "" {
-		kind = "consume"
+		kind = "all"
 	}
 	if amount <= 0 {
 		return Budget{}, fmt.Errorf("amount must be > 0")
@@ -549,7 +549,7 @@ func (s *Store) Digest(ctx context.Context, loc *time.Location) (*Digest, error)
 		TodayExpense:  todayAll.Expense,
 		TodayIncome:   todayAll.Income,
 		TodayTxnCount: todayAll.TxnCount,
-		TodayConsume:  todayConsume.Expense,
+		TodayConsume:  todayConsume.Expense, // kept for API compatibility; UI prefers today_expense
 		WeekExpense:   weekAll.Expense,
 		WeekConsume:   weekConsume.Expense,
 		Anomalies:     []string{},
@@ -559,8 +559,9 @@ func (s *Store) Digest(ctx context.Context, loc *time.Location) (*Digest, error)
 	} else if ok {
 		d.BalanceKnown = true
 		d.LatestBalance = bal
-		if weekConsume.AvgDailyExpense > 0 {
-			d.DaysOfRunway = round2(bal / weekConsume.AvgDailyExpense)
+		// Runway from all money out (not only consume).
+		if weekAll.AvgDailyExpense > 0 {
+			d.DaysOfRunway = round2(bal / weekAll.AvgDailyExpense)
 		}
 	}
 
@@ -579,9 +580,9 @@ WHERE direction='out' AND person_id IS NULL AND occurred_at >= ? AND occurred_at
 	}
 	d.TopToday = top
 
-	// simple anomalies
-	if todayConsume.Expense > 0 && weekConsume.AvgDailyExpense > 0 && todayConsume.Expense > weekConsume.AvgDailyExpense*2 {
-		d.Anomalies = append(d.Anomalies, fmt.Sprintf("今日消费 %.2f 超过近7日均消费的2倍", todayConsume.Expense))
+	// simple anomalies — use all outflow
+	if todayAll.Expense > 0 && weekAll.AvgDailyExpense > 0 && todayAll.Expense > weekAll.AvgDailyExpense*2 {
+		d.Anomalies = append(d.Anomalies, fmt.Sprintf("今日支出 %.2f 超过近7日均支出的2倍", todayAll.Expense))
 	}
 	if d.BalanceKnown && d.LatestBalance < 100 {
 		d.Anomalies = append(d.Anomalies, fmt.Sprintf("余额偏低：%.2f", d.LatestBalance))

@@ -249,12 +249,12 @@ func (s *Store) Analytics(ctx context.Context, q AnalyticsQuery) (*Analytics, er
 	}
 	out.BalanceSeries = balSeries
 
-	// Balance health uses all balance points in range + consume avg spend for runway.
-	consumeTot, err := s.rangeTotals(ctx, from, toEnd, q.Loc, string(model.KindConsume))
+	// Balance health: runway from avg daily outflow (all kinds, direction=out).
+	outflowTot, err := s.rangeTotals(ctx, from, toEnd, q.Loc, "all")
 	if err != nil {
 		return nil, err
 	}
-	out.BalanceHealth = s.computeBalanceHealth(balSeries, consumeTot.AvgDailyExpense, 100)
+	out.BalanceHealth = s.computeBalanceHealth(balSeries, outflowTot.AvgDailyExpense, 100)
 
 	if bal, at, card, ok, err := s.LatestBalanceDetail(ctx); err != nil {
 		return nil, err

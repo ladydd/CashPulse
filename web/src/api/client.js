@@ -51,7 +51,8 @@ export const api = {
     else if (opts.days === 0 || opts.days === 'all') p.set('days', 'all')
     else if (opts.days != null) p.set('days', String(opts.days))
     else p.set('days', '30')
-    p.set('kind', opts.kind || 'consume')
+    // Default: all outgoing money (consume + transfer + fee + invest…), not only kind=consume.
+    p.set('kind', opts.kind || 'all')
     if (opts.month) p.set('month', opts.month)
     if (opts.limit) p.set('limit', String(opts.limit))
     return request(`/api/v1/bootstrap?${p}`)
@@ -64,7 +65,7 @@ export const api = {
     } else if (opts.month) p.set('month', opts.month)
     else if (opts.days === 0 || opts.days === 'all') p.set('days', 'all')
     else p.set('days', String(opts.days ?? 30))
-    p.set('kind', opts.kind || 'consume')
+    p.set('kind', opts.kind || 'all')
     return request(`/api/v1/analytics?${p}`)
   },
   transactions: ({ q = '', limit = 80, offset = 0, unlabeled = false, from = '', to = '' } = {}) => {
