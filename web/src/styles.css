@@ -225,7 +225,7 @@ a { color: inherit; }
   .budget-card { min-height: 0; }
 }
 @media (max-width: 760px) {
-  :root { --sidebar: 0px; --mobile-nav-h: 64px; }
+  :root { --sidebar: 0px; --mobile-nav-h: 72px; }
   .app-shell {
     display: block;
     /* keep space for fixed bottom nav + iOS home indicator */
@@ -251,7 +251,55 @@ a { color: inherit; }
   }
   .brand-mark, .sidebar-foot { display: none; }
   .sidebar nav { display: grid; grid-template-columns: repeat(5, 1fr); height: var(--mobile-nav-h); align-items: center; }
-  .sidebar nav a { flex-direction: column; justify-content: center; padding: 6px 2px; font-size: 11px; }
+  .sidebar nav a {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: 8px 2px;
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.15;
+  }
+  .sidebar nav a b {
+    min-width: 16px;
+    height: 16px;
+    font-size: 10px;
+    top: 2px;
+    right: calc(50% - 18px);
+  }
+  /* larger tap targets: refresh + month arrows */
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+    border-radius: 14px;
+  }
+  .icon-btn.small {
+    width: 40px;
+    height: 40px;
+    font-size: 16px;
+  }
+  .welcome .icon-btn,
+  .page-title .icon-btn {
+    width: 46px;
+    height: 46px;
+    font-size: 20px;
+  }
+  .month-hero-nav .icon-btn {
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .month-hero-nav h2 {
+    font-size: 24px;
+  }
+  .btn {
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 14px;
+  }
+
   /* critical: bottom padding must clear fixed nav (was 28px and got covered) */
   .main-content {
     padding: 16px 14px calc(var(--mobile-nav-h) + env(safe-area-inset-bottom, 0px) + 20px) 14px;

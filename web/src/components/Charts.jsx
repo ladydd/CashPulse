@@ -31,6 +31,12 @@ ChartJS.register(
   Legend,
 )
 
+// Canvas default fonts often lack CJK / yen → garbled axis labels on mobile.
+ChartJS.defaults.font.family =
+  '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Segoe UI", system-ui, sans-serif'
+ChartJS.defaults.font.size = 12
+ChartJS.defaults.color = '#666666'
+
 function css(name, fallback) {
   if (typeof window === 'undefined') return fallback
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -51,9 +57,12 @@ function theme() {
 
 function moneyTick(v) {
   const n = Number(v) || 0
-  if (Math.abs(n) >= 10000) return `¥${(n / 10000).toFixed(n % 10000 === 0 ? 0 : 1)}万`
-  if (Math.abs(n) >= 1000) return `¥${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`
-  return `¥${n.toFixed(0)}`
+  // Canvas on some Android/WebViews lacks CJK glyphs → use ASCII only on axes.
+  if (Math.abs(n) >= 1000) {
+    const k = n / 1000
+    return `${Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)}k`
+  }
+  return `${Math.round(n)}`
 }
 
 function moneyFull(v) {
@@ -70,11 +79,16 @@ export function ChartsDaily({ daily = [], height = 260 }) {
     return <div className="empty-chart">这段时间还没有消费金额</div>
   }
   const labels = items.map((d) => {
-    const p = d.date.split('-')
-    return `${Number(p[1])}/${Number(p[2])}`
+    const p = String(d.date || '').split('-')
+    if (p.length >= 3) {
+      // "7/17" style is fine; full ISO sometimes confuses tick layout on mobile
+      return `${Number(p[1])}/${Number(p[2])}`
+    }
+    return String(d.date || '')
   })
+  const fullDates = items.map((d) => d.date || '')
   const data = items.map((d) => d.expense || 0)
-  const tickLimit = items.length <= 7 ? 7 : items.length <= 15 ? 15 : items.length <= 31 ? 16 : 10
+  const tickLimit = items.length <= 10 ? items.length : items.length <= 16 ? 8 : 6
 
   return (
     <div className="chart-box" style={{ height }}>
@@ -82,11 +96,11 @@ export function ChartsDaily({ daily = [], height = 260 }) {
         data={{
           labels,
           datasets: [{
-            label: '支出金额',
+            label: '支出(元)',
             data,
             backgroundColor: t.brand,
             borderRadius: { topLeft: 4, topRight: 4 },
-            maxBarThickness: items.length <= 15 ? 28 : 20,
+            maxBarThickness: items.length <= 15 ? 28 : 18,
           }],
         }}
         options={{
@@ -95,7 +109,13 @@ export function ChartsDaily({ daily = [], height = 260 }) {
           plugins: {
             legend: { display: false },
             tooltip: {
+              titleFont: { family: ChartJS.defaults.font.family, size: 13 },
+              bodyFont: { family: ChartJS.defaults.font.family, size: 13 },
               callbacks: {
+                title: (els) => {
+                  const i = els[0]?.dataIndex ?? 0
+                  return fullDates[i] || labels[i] || ''
+                },
                 label: (ctx) => {
                   const row = items[ctx.dataIndex]
                   return ` 花了 ${moneyFull(ctx.parsed.y)}（${row?.txn_count || 0} 笔）`
@@ -106,13 +126,27 @@ export function ChartsDaily({ daily = [], height = 260 }) {
           scales: {
             x: {
               grid: { display: false },
-              ticks: { color: t.muted, maxTicksLimit: tickLimit, autoSkip: items.length > 31, maxRotation: 0 },
+              border: { display: false },
+              ticks: {
+                color: '#666',
+                font: { size: 11, family: ChartJS.defaults.font.family },
+                maxTicksLimit: tickLimit,
+                autoSkip: true,
+                maxRotation: 0,
+                minRotation: 0,
+              },
             },
             y: {
               beginAtZero: true,
               grid: { color: t.grid },
-              title: { display: true, text: '金额', color: t.muted, font: { size: 11 } },
-              ticks: { color: t.muted, callback: moneyTick, maxTicksLimit: 5 },
+              border: { display: false },
+              title: { display: false },
+              ticks: {
+                color: '#666',
+                callback: moneyTick,
+                maxTicksLimit: 5,
+                font: { size: 11, family: ChartJS.defaults.font.family },
+              },
             },
           },
         }}
@@ -309,8 +343,13 @@ export function ChartsBalance({ series = [], height = 260 }) {
             y: {
               min: yMin,
               grid: { color: t.grid },
-              title: { display: true, text: '余额', color: t.muted, font: { size: 11 } },
-              ticks: { color: t.muted, callback: moneyTick, maxTicksLimit: 5 },
+              title: { display: false },
+              ticks: {
+                color: t.muted,
+                callback: moneyTick,
+                maxTicksLimit: 5,
+                font: { size: 11, family: ChartJS.defaults.font.family },
+              },
             },
           },
         }}
