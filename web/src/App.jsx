@@ -280,20 +280,40 @@ function TxnList({ items, empty = '暂无流水' }) {
     <div className="txn-list">
       {items.map((t) => {
         const inc = t.direction === 'in'
+        const kindLabel = ({
+          consume: '消费',
+          transfer: '转账',
+          refund: '退款',
+          fee: '手续费',
+          income: '入账',
+          invest: '理财',
+          other: '其他',
+        })[t.kind] || t.category || t.kind || '—'
+        const tags = t.tags || []
+        const hasPerson = Boolean(t.person_name)
+        const hasTags = tags.length > 0
         return (
           <div className="txn-item" key={t.id}>
             <span className={`txn-icon ${inc ? 'income' : ''}`}>{(t.merchant || t.bank || '账').slice(0, 1)}</span>
             <div className="txn-copy">
-              <strong>{t.merchant || t.bank || '未知'}</strong>
-              <span>{t.category || t.kind || '—'} · {fmtTime(t.occurred_at)}</span>
+              <div className="txn-title-row">
+                <strong>{t.merchant || t.bank || '未知'}</strong>
+                <div className={`txn-amount ${inc ? 'income' : ''}`}>{inc ? '+' : '−'}{money(t.amount)}</div>
+              </div>
+              <span className="txn-meta">{kindLabel} · {fmtTime(t.occurred_at)}</span>
+              <div className="txn-labels">
+                {hasPerson ? (
+                  <span className="chip person" style={{ '--chip': t.person_color || '#65766d' }}>{t.person_name}</span>
+                ) : (
+                  !inc ? <span className="chip muted">未标归属</span> : null
+                )}
+                {hasTags
+                  ? tags.map((tag) => (
+                      <span className="chip" key={tag.id} style={{ '--chip': tag.color || '#65766d' }}>{tag.name}</span>
+                    ))
+                  : null}
+              </div>
             </div>
-            <div className="txn-labels">
-              {t.person_name ? <span className="chip" style={{ '--chip': t.person_color || '#65766d' }}>{t.person_name}</span> : null}
-              {(t.tags || []).map((tag) => (
-                <span className="chip" key={tag.id} style={{ '--chip': tag.color || '#65766d' }}>{tag.name}</span>
-              ))}
-            </div>
-            <div className={`txn-amount ${inc ? 'income' : ''}`}>{inc ? '+' : '−'}{money(t.amount)}</div>
           </div>
         )
       })}
