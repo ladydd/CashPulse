@@ -589,6 +589,37 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
     setQueue((prev) => prev.filter((t) => t.id !== txnId))
   }
 
+  // Explicit「不标」: clear tags; if person already chosen under 只看未归类, finish the card.
+  async function handleNoTag(txn) {
+    setActionErr('')
+    setBusyId(txn.id)
+    try {
+      let updated = txn
+      if ((txn.tags || []).length > 0) {
+        updated = await onLabel(txn.id, { tag_ids: [] })
+        setQueue((prev) => prev.map((t) => (t.id === txn.id ? { ...t, ...updated } : t)))
+        if (heldRef.current[txn.id]) {
+          setHeld((prev) => {
+            if (!prev[txn.id]) return prev
+            const next = { ...prev, [txn.id]: updated }
+            heldRef.current = next
+            return next
+          })
+        }
+        if (onCountersRefresh) await onCountersRefresh()
+      }
+      const personId = updated.person_id != null ? updated.person_id : txn.person_id
+      if (onlyUnlabeled && personId != null) {
+        dismissHeld(txn.id)
+      }
+    } catch (e) {
+      setActionErr(e.message || '操作失败，请重试')
+      try { await load() } catch { /* ignore */ }
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   async function handleLabel(txnId, body) {
     setActionErr('')
     setBusyId(txnId)
@@ -649,7 +680,7 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
   return (
     <div className="page-enter narrow-page">
       <div className="page-title">
-        <div><span className="eyebrow">INBOX</span><h2>整理流水</h2><p>先点归属，再点标签 · 点「完成」收起</p></div>
+        <div><span className="eyebrow">INBOX</span><h2>整理流水</h2><p>归属必选 · 标签可选（可点「不标」）</p></div>
         <button
           className="icon-btn"
           type="button"
@@ -733,38 +764,51 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
                     </button>
                   </div>
                 </div>
-                {data.tags?.length ? (
-                  <div className="label-row">
-                    <span>标签</span>
-                    <div>
-                      {(data.tags || []).map((tag) => {
-                        const on = (t.tags || []).some((x) => x.id === tag.id)
-                        return (
-                          <button
-                            key={tag.id}
-                            type="button"
-                            disabled={busyId === t.id}
-                            className={`chip-btn ${on ? 'active' : ''}`}
-                            style={{ '--chip': tag.color }}
-                            onClick={() => {
-                              // Build from latest queue row (not stale closure if double-taps)
-                              const cur = queue.find((x) => x.id === t.id) || t
-                              const have = new Set((cur.tags || []).map((x) => x.id))
-                              if (have.has(tag.id)) have.delete(tag.id)
-                              else have.add(tag.id)
-                              handleLabel(t.id, { tag_ids: [...have] })
-                            }}
-                          >
-                            {tag.name}
-                          </button>
-                        )
-                      })}
-                    </div>
+                <div className="label-row">
+                  <span>标签</span>
+                  <div>
+                    <button
+                      type="button"
+                      disabled={busyId === t.id}
+                      className={`chip-btn chip-none ${!(t.tags || []).length ? 'active' : ''}`}
+                      onClick={() => {
+                        const cur = queue.find((x) => x.id === t.id) || t
+                        handleNoTag(cur)
+                      }}
+                    >
+                      不标
+                    </button>
+                    {(data.tags || []).map((tag) => {
+                      const on = (t.tags || []).some((x) => x.id === tag.id)
+                      return (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          disabled={busyId === t.id}
+                          className={`chip-btn ${on ? 'active' : ''}`}
+                          style={{ '--chip': tag.color }}
+                          onClick={() => {
+                            // Build from latest queue row (not stale closure if double-taps)
+                            const cur = queue.find((x) => x.id === t.id) || t
+                            const have = new Set((cur.tags || []).map((x) => x.id))
+                            if (have.has(tag.id)) have.delete(tag.id)
+                            else have.add(tag.id)
+                            handleLabel(t.id, { tag_ids: [...have] })
+                          }}
+                        >
+                          {tag.name}
+                        </button>
+                      )
+                    })}
                   </div>
-                ) : null}
+                </div>
                 {onlyUnlabeled && hasPerson ? (
                   <div className="label-row organize-done-row">
-                    <span className="hint">{(t.tags || []).length ? '已归属 · 可再改标签' : '已归属 · 可点标签，或直接完成'}</span>
+                    <span className="hint">
+                      {(t.tags || []).length
+                        ? '已归属 · 可改标签，或点完成'
+                        : '已归属 · 可点标签，或点「不标/完成」'}
+                    </span>
                     <button
                       type="button"
                       className="btn primary small"
