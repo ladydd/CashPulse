@@ -516,9 +516,17 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
   const [window, setWindow] = useState('today')
   const [onlyUnlabeled, setOnlyUnlabeled] = useState(true)
   const [queue, setQueue] = useState([])
+  // Items kept on screen after person assign under「只看未归类」, so tags can still be tapped.
+  // Keyed by txn id. Cleared when filter/window changes or user taps「完成」.
+  const [held, setHeld] = useState({})
+  const heldRef = useRef({})
   const [busyId, setBusyId] = useState(null)
   const [loadErr, setLoadErr] = useState('')
   const [actionErr, setActionErr] = useState('')
+
+  useEffect(() => {
+    heldRef.current = held
+  }, [held])
 
   const range = useMemo(() => {
     const now = new Date()
@@ -534,6 +542,12 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
     return { from: ymd(s), to: end, label: window === '3d' ? '近 3 天' : '近 7 天' }
   }, [window])
 
+  // Changing date window / unlabeled filter: drop held cards (fresh inbox).
+  useEffect(() => {
+    setHeld({})
+    heldRef.current = {}
+  }, [onlyUnlabeled, range.from, range.to])
+
   const load = useCallback(async () => {
     const res = await api.transactions({
       limit: 200,
@@ -541,7 +555,21 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
       from: range.from,
       to: range.to,
     })
-    setQueue(res.items || [])
+    let items = res.items || []
+    // Merge held (person just set) so「餐饮」等标签仍可点；否则 reload 会把它们滤掉。
+    if (onlyUnlabeled) {
+      const byId = new Map(items.map((t) => [t.id, t]))
+      for (const h of Object.values(heldRef.current)) {
+        if (h?.id != null && !byId.has(h.id)) byId.set(h.id, h)
+      }
+      items = [...byId.values()].sort((a, b) => {
+        const ta = new Date(a.occurred_at).getTime()
+        const tb = new Date(b.occurred_at).getTime()
+        if (tb !== ta) return tb - ta
+        return (b.id || 0) - (a.id || 0)
+      })
+    }
+    setQueue(items)
     return res
   }, [onlyUnlabeled, range.from, range.to])
 
@@ -550,29 +578,66 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
     load().catch((e) => setLoadErr(e.message || '加载失败'))
   }, [load])
 
+  function dismissHeld(txnId) {
+    setHeld((prev) => {
+      if (!prev[txnId]) return prev
+      const next = { ...prev }
+      delete next[txnId]
+      heldRef.current = next
+      return next
+    })
+    setQueue((prev) => prev.filter((t) => t.id !== txnId))
+  }
+
   async function handleLabel(txnId, body) {
     setActionErr('')
     setBusyId(txnId)
     try {
       const updated = await onLabel(txnId, body)
-      // Update local queue immediately so UI doesn't lag
-      setQueue((prev) => {
-        const next = prev.map((t) => (t.id === txnId ? { ...t, ...updated } : t))
-        // If filtering unlabeled and person assigned, remove from list
-        if (onlyUnlabeled && body && Object.prototype.hasOwnProperty.call(body, 'person_id') && body.person_id != null) {
-          return next.filter((t) => t.id !== txnId)
-        }
-        // cleared person while unlabeled filter: keep / will reappear as unlabeled
-        if (onlyUnlabeled && body && body.person_id == null && Object.prototype.hasOwnProperty.call(body, 'person_id')) {
-          // after clear, item should stay as unlabeled - refresh from server for accuracy
+      const personJustSet =
+        onlyUnlabeled
+        && body
+        && Object.prototype.hasOwnProperty.call(body, 'person_id')
+        && body.person_id != null
+      const personCleared =
+        onlyUnlabeled
+        && body
+        && Object.prototype.hasOwnProperty.call(body, 'person_id')
+        && body.person_id == null
+
+      // Keep local row; never drop on person assign (old bug: card vanished before tags).
+      setQueue((prev) => prev.map((t) => (t.id === txnId ? { ...t, ...updated } : t)))
+
+      if (personJustSet) {
+        setHeld((prev) => {
+          const next = { ...prev, [txnId]: updated }
+          heldRef.current = next
           return next
-        }
-        return next
-      })
-      // Refresh badge + home counters (digest/analytics) without waiting on full page reload
+        })
+      } else if (personCleared) {
+        setHeld((prev) => {
+          if (!prev[txnId]) return prev
+          const next = { ...prev }
+          delete next[txnId]
+          heldRef.current = next
+          return next
+        })
+      } else if (heldRef.current[txnId]) {
+        // Tag toggles while held: keep freshest server row.
+        setHeld((prev) => {
+          if (!prev[txnId]) return prev
+          const next = { ...prev, [txnId]: updated }
+          heldRef.current = next
+          return next
+        })
+      }
+
       if (onCountersRefresh) await onCountersRefresh()
-      // Re-fetch queue for consistency (especially tag-only changes / filter)
-      await load()
+      // Only re-fetch when not in unlabeled inbox, or after clear person.
+      // Person/tag updates already have server `updated`; reload would race and drop held cards.
+      if (!onlyUnlabeled || personCleared) {
+        await load()
+      }
     } catch (e) {
       setActionErr(e.message || '打标失败，请重试')
       try { await load() } catch { /* ignore */ }
@@ -584,7 +649,7 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
   return (
     <div className="page-enter narrow-page">
       <div className="page-title">
-        <div><span className="eyebrow">INBOX</span><h2>整理流水</h2><p>只处理新流水 · 历史不强制补标</p></div>
+        <div><span className="eyebrow">INBOX</span><h2>整理流水</h2><p>先点归属，再点标签 · 点「完成」收起</p></div>
         <button
           className="icon-btn"
           type="button"
@@ -600,7 +665,7 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
       <section className="organize-summary">
         <div className="organize-count">
           <strong>{queue.length}</strong>
-          <span>{onlyUnlabeled ? '笔待归类' : '笔流水'}</span>
+          <span>{onlyUnlabeled ? '笔待整理' : '笔流水'}</span>
         </div>
         <div>
           <strong>{range.label}</strong>
@@ -628,8 +693,11 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
           <div className="empty-state success"><strong>已经整理完了</strong></div>
         ) : (
           <div className="organize-list">
-            {queue.map((t) => (
-              <article className={`organize-item ${busyId === t.id ? 'is-busy' : ''}`} key={t.id}>
+            {queue.map((t) => {
+              const isHeld = Boolean(held[t.id])
+              const hasPerson = t.person_id != null
+              return (
+              <article className={`organize-item ${busyId === t.id ? 'is-busy' : ''} ${isHeld ? 'is-held' : ''}`} key={t.id}>
                 <div className="organize-main">
                   <span className="txn-icon">{(t.merchant || '账').slice(0, 1)}</span>
                   <div className="txn-copy">
@@ -679,7 +747,9 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
                             className={`chip-btn ${on ? 'active' : ''}`}
                             style={{ '--chip': tag.color }}
                             onClick={() => {
-                              const have = new Set((t.tags || []).map((x) => x.id))
+                              // Build from latest queue row (not stale closure if double-taps)
+                              const cur = queue.find((x) => x.id === t.id) || t
+                              const have = new Set((cur.tags || []).map((x) => x.id))
                               if (have.has(tag.id)) have.delete(tag.id)
                               else have.add(tag.id)
                               handleLabel(t.id, { tag_ids: [...have] })
@@ -692,8 +762,22 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
                     </div>
                   </div>
                 ) : null}
+                {onlyUnlabeled && hasPerson ? (
+                  <div className="label-row organize-done-row">
+                    <span className="hint">{(t.tags || []).length ? '已归属 · 可再改标签' : '已归属 · 可点标签，或直接完成'}</span>
+                    <button
+                      type="button"
+                      className="btn primary small"
+                      disabled={busyId === t.id}
+                      onClick={() => dismissHeld(t.id)}
+                    >
+                      完成
+                    </button>
+                  </div>
+                ) : null}
               </article>
-            ))}
+              )
+            })}
           </div>
         )}
       </section>

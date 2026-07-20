@@ -172,6 +172,10 @@ a { color: inherit; }
 .label-row { display: grid; grid-template-columns: 48px 1fr; gap: 8px; align-items: start; margin-top: 8px; }
 .label-row > span { color: var(--ink-3); font-size: 12px; padding-top: 6px; }
 .label-row > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.organize-item.is-held { background: color-mix(in oklab, var(--brand) 6%, var(--surface)); border-radius: 14px; padding: 10px 10px 8px; margin: 0 -4px; }
+.organize-done-row { grid-template-columns: 1fr auto; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.organize-done-row .hint { color: var(--ink-3); font-size: 12px; padding-top: 0; }
+.btn.small { padding: 6px 12px; font-size: 12px; border-radius: 10px; }
 .chip-btn { border: 1px solid var(--line); background: var(--surface-2); color: var(--ink-2); border-radius: 999px; padding: 5px 11px; font-size: 12px; }
 .chip-btn.active { background: color-mix(in oklab, var(--chip, var(--brand)) 18%, white); border-color: color-mix(in oklab, var(--chip, var(--brand)) 40%, var(--line)); color: var(--ink); font-weight: 650; }
 
