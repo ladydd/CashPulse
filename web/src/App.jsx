@@ -14,6 +14,38 @@ function canGoNextMonth(ym) {
   return (ym || currentMonth()) < currentMonth()
 }
 
+// Soft but distinct icon color: person color if labeled, else by money direction/kind.
+function txnIconColor(t) {
+  if (t?.person_color) return t.person_color
+  if (t?.direction === 'in') return '#1f7a4c'
+  switch (t?.kind) {
+    case 'transfer':
+      return '#4f6bed'
+    case 'fee':
+      return '#b7791f'
+    case 'invest':
+      return '#7c5cbf'
+    case 'refund':
+      return '#2f9e6b'
+    case 'consume':
+      return '#d95926'
+    default:
+      return '#1f6b4a'
+  }
+}
+
+function kindLabelOf(t) {
+  return ({
+    consume: '消费',
+    transfer: '转账',
+    refund: '退款',
+    fee: '手续费',
+    income: '入账',
+    invest: '理财',
+    other: '其他',
+  })[t?.kind] || t?.category || t?.kind || '—'
+}
+
 const ChartsDaily = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsDaily })))
 const ChartsDonut = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsDonut })))
 const ChartsHBar = lazy(() => import('./components/Charts.jsx').then((m) => ({ default: m.ChartsHBar })))
@@ -280,27 +312,21 @@ function TxnList({ items, empty = '暂无流水' }) {
     <div className="txn-list">
       {items.map((t) => {
         const inc = t.direction === 'in'
-        const kindLabel = ({
-          consume: '消费',
-          transfer: '转账',
-          refund: '退款',
-          fee: '手续费',
-          income: '入账',
-          invest: '理财',
-          other: '其他',
-        })[t.kind] || t.category || t.kind || '—'
         const tags = t.tags || []
         const hasPerson = Boolean(t.person_name)
         const hasTags = tags.length > 0
+        const icon = txnIconColor(t)
         return (
           <div className="txn-item" key={t.id}>
-            <span className={`txn-icon ${inc ? 'income' : ''}`}>{(t.merchant || t.bank || '账').slice(0, 1)}</span>
+            <span className={`txn-icon ${inc ? 'income' : ''}`} style={{ '--icon': icon }}>
+              {(t.merchant || t.bank || '账').slice(0, 1)}
+            </span>
             <div className="txn-copy">
               <div className="txn-title-row">
                 <strong>{t.merchant || t.bank || '未知'}</strong>
                 <div className={`txn-amount ${inc ? 'income' : ''}`}>{inc ? '+' : '−'}{money(t.amount)}</div>
               </div>
-              <span className="txn-meta">{kindLabel} · {fmtTime(t.occurred_at)}</span>
+              <span className="txn-meta">{kindLabelOf(t)} · {fmtTime(t.occurred_at)}</span>
               <div className="txn-labels">
                 {hasPerson ? (
                   <span className="chip person" style={{ '--chip': t.person_color || '#65766d' }}>{t.person_name}</span>
@@ -730,43 +756,52 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
               return (
               <article className={`organize-item ${busyId === t.id ? 'is-busy' : ''} ${isHeld ? 'is-held' : ''}`} key={t.id}>
                 <div className="organize-main">
-                  <span className="txn-icon">{(t.merchant || '账').slice(0, 1)}</span>
+                  <span
+                    className={`txn-icon ${t.direction === 'in' ? 'income' : ''}`}
+                    style={{ '--icon': txnIconColor(t) }}
+                  >
+                    {(t.merchant || '账').slice(0, 1)}
+                  </span>
                   <div className="txn-copy">
                     <strong>{t.merchant || t.bank || '未知'}</strong>
-                    <span>{fmtTime(t.occurred_at)} · {t.category || t.kind}</span>
+                    <span>{fmtTime(t.occurred_at)} · {kindLabelOf(t)}</span>
                   </div>
                   <div className={`txn-amount ${t.direction === 'in' ? 'income' : ''}`}>
                     {t.direction === 'in' ? '+' : '−'}{money(t.amount)}
                   </div>
                 </div>
-                <div className="label-row">
+                <div className="label-row person-row">
                   <span>归属</span>
-                  <div>
+                  <div className="chip-group">
                     {(data.people || []).map((p) => (
                       <button
                         key={p.id}
                         type="button"
                         disabled={busyId === t.id}
                         className={`chip-btn ${t.person_id === p.id ? 'active' : ''}`}
-                        style={{ '--chip': p.color }}
+                        style={{ '--chip': p.color || '#3987e5' }}
                         onClick={() => handleLabel(t.id, { person_id: p.id })}
                       >
                         {p.name}
                       </button>
                     ))}
+                  </div>
+                  {hasPerson ? (
                     <button
                       type="button"
-                      className="chip-btn"
+                      className="text-btn clear-person"
                       disabled={busyId === t.id}
                       onClick={() => handleLabel(t.id, { person_id: null })}
                     >
-                      清除
+                      改归属
                     </button>
-                  </div>
+                  ) : (
+                    <span className="row-spacer" aria-hidden="true" />
+                  )}
                 </div>
                 <div className="label-row">
                   <span>标签</span>
-                  <div>
+                  <div className="chip-group">
                     <button
                       type="button"
                       disabled={busyId === t.id}
@@ -786,7 +821,7 @@ function Organize({ data, onRefresh, onCountersRefresh, onLabel }) {
                           type="button"
                           disabled={busyId === t.id}
                           className={`chip-btn ${on ? 'active' : ''}`}
-                          style={{ '--chip': tag.color }}
+                          style={{ '--chip': tag.color || '#8a897c' }}
                           onClick={() => {
                             // Build from latest queue row (not stale closure if double-taps)
                             const cur = queue.find((x) => x.id === t.id) || t
